@@ -25,11 +25,16 @@
     listening: false,
     wantListen: false,
     hadSpeech: false,
+    tts: true,           // 播报开关，和"能不能识别"分开：识别挂了也不该闭嘴
+    asrDown: false,
     finalText: '',
     interimText: '',
     queue: [],
     speechToken: 0,
     utter: null,
+    speakReadyAt: 0,     // cancel() 之后要等一会儿再 speak，否则会被静默丢弃
+    speakStartAt: 0,
+    lastInterruptAt: 0,
     // 本轮
     turn: 0,
     fullText: '',
@@ -44,6 +49,7 @@
     tDone: 0,
     reportedAudio: false,
     timer: { silence: 0, barge: 0 },
+    silenceMs: 2000,     // 说完了停多久算说完。1.2 秒太急，用户喘口气就被当成说完了
     // 统计
     stats: { turns: 0, probe: 0, clarify: 0, switch: 0, interrupts: 0, question: 0, maxQ: 8, cost: 0, inTok: 0, outTok: 0 },
     report: null,
@@ -262,8 +268,9 @@
   /* ------------------------------------------------------------ 语音播报 */
 
   function enqueue(text, base) {
-    if (!S.voice || !text) return;
-    S.queue.push({ text, base });
+    if (!S.tts || !text) return;
+    if (S.interrupted) return;        // 这一轮已经被打断，后半句不再念
+    S.queue.push({ text, base, tries: 0 });
     if (!S.speaking) pump();
   }
 
@@ -272,8 +279,17 @@
     const item = S.queue.shift();
     if (!item) { onSpeechIdle(); return; }
 
+    // cancel() 是异步的，紧接着 speak() 会被浏览器丢掉（表现就是"有字幕没声音"）
+    const wait = (S.speakReadyAt || 0) - performance.now();
+    if (wait > 0) {
+      S.queue.unshift(item);
+      setTimeout(pump, wait + 20);
+      return;
+    }
+
     const token = S.speechToken;
     S.speaking = true;
+    S.speakStartAt = performance.now();
     setStatus('面试官在说…', 'speak');
 
     const u = new SpeechSynthesisUtterance(item.text);
@@ -282,6 +298,7 @@
     u.pitch = 1;
 
     u.onstart = () => {
+      S.speakStartAt = performance.now();
       if (!S.tFirstAudio) {
         S.tFirstAudio = performance.now();
         paintHUD();
@@ -306,13 +323,33 @@
     };
 
     S.utter = u;
-    try { speechSynthesis.speak(u); } catch (e) { S.speaking = false; pump(); }
+    try {
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.speak(u);
+    } catch (e) {
+      S.speaking = false;
+      pump();
+      return;
+    }
+
+    // 页面切走过、或引擎卡住时，speak() 不报错也不出声。450ms 还没起来就补一次。
+    setTimeout(() => {
+      if (token !== S.speechToken || !S.speaking) return;
+      if (speechSynthesis.speaking || speechSynthesis.pending) return;
+      if (item.tries >= 1) return;
+      item.tries += 1;
+      S.speaking = false;
+      S.queue.unshift(item);
+      S.speakReadyAt = performance.now() + 150;
+      try { speechSynthesis.cancel(); } catch (e) { /* noop */ }
+      pump();
+    }, 450);
   }
 
   function onSpeechIdle() {
     S.speaking = false;
     if (!S.session || S.finished) return;
-    if (S.voice) {
+    if (S.voice && !S.asrDown) {
       if (!S.listening) startRec();
       refreshStatus();
     } else {
@@ -320,6 +357,26 @@
       input.disabled = false;
       input.focus();
     }
+    resumeSilence();
+  }
+
+  // 判断"这段声音是不是它自己"：外放时麦克风会拾到 TTS，
+  // 一响就断会变成自激——它把自己打断，用户还以为坏了。
+  function looksLikeEcho(text) {
+    const t = (text || '').replace(/\s/g, '');
+    const full = (S.fullText || '').replace(/\s/g, '');
+    if (!t || !full) return false;
+    if (full.includes(t)) return true;
+    let hit = 0;
+    for (const ch of t) if (full.includes(ch)) hit++;
+    return hit / t.length > 0.85;
+  }
+
+  function canBarge(text) {
+    const now = performance.now();
+    if (S.speakStartAt && now - S.speakStartAt < 500) return false;   // 刚出声，给麦克风一点缓冲
+    if (S.lastInterruptAt && now - S.lastInterruptAt < 2000) return false; // 一次回答只断一次
+    return !looksLikeEcho(text);
   }
 
   function interruptNow(heard) {
@@ -333,14 +390,23 @@
     S.utter = null;
     S.queue.length = 0;
     S.interrupted = true;
+    S.lastInterruptAt = performance.now();
+    S.speakReadyAt = performance.now() + 160;
     S.stats.interrupts++;
     markInterrupt(ratio);
     paintStats();
     post('/api/interrupt', { session: S.session, ratio, spoken, heard: heard || '' });
     // 识别本来就在跑（边说边听），这里不重启，否则会把刚识别到的话清掉
-    if (S.voice && !S.listening) startRec();
+    if (S.voice && !S.asrDown && !S.listening) startRec();
     refreshStatus();
   }
+
+  // 切走标签页时浏览器会把 speechSynthesis 挂起，回来要手动接上，
+  // 否则会出现"有字幕、没声音"
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    try { speechSynthesis.resume(); } catch (e) { /* noop */ }
+  });
 
   /* ------------------------------------------------------------ 语音识别 */
 
@@ -363,10 +429,9 @@
 
     rec.onspeechstart = () => {
       S.hadSpeech = true;
-      if (S.speaking) {
-        clearTimeout(S.timer.barge);
-        S.timer.barge = setTimeout(() => interruptNow(''), 180);
-      }
+      // 这里不再直接判打断。外放时麦克风会拾到面试官自己的声音，
+      // "一有起音就断"等于让它自己把自己打断（实测一场能误触五六次）。
+      // 真正的打断交给 onresult：识别出 ≥4 个有意义的字才算。
     };
 
     rec.onresult = (e) => {
@@ -382,7 +447,7 @@
       input.value = merged.slice(-90);
 
       // 边说边听：识别到成句的内容，就算打断，不等 VAD
-      if (S.speaking && merged.length >= 4) {
+      if (S.speaking && merged.length >= 4 && canBarge(merged)) {
         interruptNow(merged);
         return;
       }
@@ -410,21 +475,23 @@
 
   function degrade(msg) {
     S.voice = false;
+    S.asrDown = true;
     S.wantListen = false;
     $('voiceSwitch').classList.remove('on');
-    $('voiceHint').textContent = '语音不可用，已降级为打字';
+    $('voiceHint').textContent = '识别用不了，改打字；它还会念';
     input.disabled = false;
     input.focus();
-    tip(`<b>${msg}</b>`);
-    setStatus('文字模式', '');
-    if (S.speaking) { S.speechToken++; try { speechSynthesis.cancel(); } catch (e) {} S.speaking = false; S.queue.length = 0; }
+    tip(`<b>${msg}</b>　播报没关，还能听见它说话。`);
+    setStatus('文字输入 · 仍会播报', '');
+    // 不要在这里 cancel 播报：识别挂了不代表它该闭嘴
   }
 
   function startRec() {
     if (!rec || S.listening || !S.session || S.finished) return;
-    S.finalText = '';
-    S.interimText = '';
-    S.hadSpeech = false;
+    // 注意：这里绝对不能清 finalText。
+    // 识别引擎在静默几秒后会自己 onend，代码再 startRec 把它接上——
+    // 如果这时把缓冲清了，用户说到一半的半句话就没了（"前半段没录进去"）。
+    // 清空只发生在「这一轮已经提交」之后。
     S.wantListen = true;
     try { rec.start(); } catch (e) { /* 已在跑 */ }
   }
@@ -440,7 +507,14 @@
     if (S.speaking || S.busy) return;      // 面试官在说或还在生成，不判"说完"
     S.timer.silence = setTimeout(() => {
       if (!S.speaking && !S.busy && S.finalText.trim()) commitSpeech();
-    }, 1200);
+    }, S.silenceMs);
+  }
+
+  // 播报 / 生成结束时补一次。否则用户趁它说话时讲的内容，
+  // 因为当时 speaking=true 没计时，播完之后就再也没人管了——表现就是"我不说了它也没反应"。
+  function resumeSilence() {
+    if (!S.finalText.trim() || S.speaking || S.busy) return;
+    resetSilence();
   }
 
   function commitSpeech() {
@@ -467,6 +541,14 @@
     S.finished = false;
     S.started = true;
     S.turn = 0;
+    S.asrDown = false;
+    S.interrupted = false;
+    S.lastInterruptAt = 0;
+    S.speakReadyAt = 0;
+    S.speaking = false;
+    S.queue.length = 0;
+    try { speechSynthesis.cancel(); } catch (e) { /* noop */ }
+    S.speechToken++;
     S.stats = { turns: 0, probe: 0, clarify: 0, switch: 0, interrupts: 0, question: 1, maxQ: S.rounds, cost: 0, inTok: 0, outTok: 0 };
     paintStats();
     setStatus('面试官上线', 'think');
@@ -482,6 +564,9 @@
           S.stats.maxQ = ev.max_question;
           paintStats();
           paintMic();
+          // 开场白也要能被打断：不在这里开麦，等它念完才开，
+          // 用户在开场白期间说的话就全丢了（"第一句前半段没录进去"）
+          if (S.voice) startRec();
           tip(S.mock
             ? '演示模式：没有检测到模型 Key，面试官由本地脚本扮演。配好 <b>DEEPSEEK_API_KEY</b> 后重启即可换成真模型。'
             : `真实模型 · ${S.rounds} 个话题 · 一场约 ¥0.05`);
@@ -514,6 +599,10 @@
     S.interrupted = false;
     S.reportedAudio = false;
     S.bubble = null;
+    // 新一轮开始，上一轮的识别缓冲才清
+    S.finalText = '';
+    S.interimText = '';
+    S.hadSpeech = false;
     paintHUD();
     paintMic();
     input.disabled = true;
@@ -534,6 +623,7 @@
     paintMic();
     refreshStatus();
     if (!S.voice && !S.finished) { input.disabled = false; input.focus(); }
+    resumeSilence();
   }
 
   function handleEvent(ev) {
@@ -694,7 +784,7 @@
       ['首字 P50 / P95', `${ms(lat.first_token_p50)} / ${ms(lat.first_token_p95)}`],
       ['首音 P50 / P95', `${ms(lat.first_audio_p50)} / ${ms(lat.first_audio_p95)}`],
       ['整轮 P50 / P95', `${ms(lat.total_p50)} / ${ms(lat.total_p95)}`],
-      ['打断 / 恢复', `${(m.interrupts || {}).count || 0} 次 / ${(m.interrupts || {}).recovery_rate == null ? '—' : Math.round(m.interrupts.recovery_rate * 100) + '%'}`],
+      ['打断 / 不重复', `${(m.interrupts || {}).count || 0} 次 / ${(m.interrupts || {}).recovery_rate == null ? '—' : Math.round(m.interrupts.recovery_rate * 100) + '%'}`],
       ['token 入 / 出', `${(u.in || 0).toLocaleString()} / ${(u.out || 0).toLocaleString()}`],
       ['本场成本', `¥${(m.cost_cny || 0).toFixed(4)}${u.mock ? '（演示，估算）' : ''}`],
     ];
@@ -717,6 +807,9 @@
     try { speechSynthesis.cancel(); } catch (e) {}
     S.speechToken++;
     chat.querySelectorAll('.chat-inner').forEach((n) => n.remove());
+    S.queue.length = 0;
+    S.speaking = false;
+    S.interrupted = false;
     const box = document.createElement('div');
     box.className = 'empty';
     box.id = 'empty';
@@ -763,7 +856,9 @@
 
   $('voiceSwitch').addEventListener('click', () => {
     const sw = $('voiceSwitch');
-    S.voice = !sw.classList.contains('on') ? true : false;
+    S.voice = !sw.classList.contains('on');
+    S.tts = S.voice;                    // 手动关掉就是真不想听了
+    if (S.voice) S.asrDown = false;     // 手动重开，就给识别一次重试机会
     sw.classList.toggle('on', S.voice);
     $('voiceHint').textContent = S.voice ? '它会念，你说完自动接话' : '只打字，不播音';
     if (S.voice) {
@@ -976,6 +1071,7 @@
       if (!SR) {
         $('voiceSwitch').classList.remove('on');
         S.voice = false;
+        S.asrDown = true;
         $('voiceHint').textContent = '这个浏览器不支持语音识别，用打字';
         tip('当前浏览器没有 Web Speech API，已切到打字模式。用 <b>Edge</b> 打开可以语音对练。');
       }

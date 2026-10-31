@@ -252,18 +252,31 @@ _CLAUSE = re.compile(r"[，。！？；：、,\n.?!;:]+")
 _KEEP = re.compile(r"[^\s，。！？；：、,.!?;:…\-—~`\"'“”‘’（）()【】\[\]《》<>]+")
 
 
+_NOISE = re.compile(r"^[嗯呃啊哦噢诶欸唉哈呀吧嘛呢么，。、\s]+$")
+
+
 def _snip(text: str, n: int = 12) -> str:
     """从用户回答里抠一小段能复述的原文，用来做「回声式追问」。
 
-    取第一个分句（比"前 10 个字"读起来更像人话），去掉开头的主语和语气词。
+    取第一个有实质内容的分句——语音识别出来的句子常以"嗯""呃"开头，
+    直接取 parts[0] 会拿到一个语气词，复述出来就是「你说『嗯』」，比不复述更糟。
     """
     t = (text or "").strip()
-    parts = [p for p in _CLAUSE.split(t) if p.strip()]
-    if parts:
+    parts = [p.strip() for p in _CLAUSE.split(t) if p.strip()]
+    picked = ""
+    for p in parts:
+        if len(p) >= 4 and not _NOISE.match(p):
+            picked = p
+            break
+    if picked:
+        t = picked
+    elif parts:
         t = parts[0]
     t = _FILLER.sub("", t)
     t = re.sub(r"^[了的]+", "", t)
-    t = re.sub(r"^是", "", t)
+    # 只在"我是来自…"这种主语被摘掉后残留的"是"上动手，
+    # 否则「是否该主动说话」会被剪成「否该主动说话」
+    t = re.sub(r"^是(?=来自|在|做|负责|通过|因为|从|用)", "", t)
     t = "".join(_KEEP.findall(t))
     return t[:n].strip()
 
@@ -577,6 +590,8 @@ class InterviewAgent:
         if action == CLARIFY:
             self.clarifys += 1
             line = CLARIFY_LINES[(self.turn_seq - 1) % len(CLARIFY_LINES)]
+            # 澄清也要先推 tok，否则前端气泡只有一个空框（字幕靠 tok 拼）
+            emit({"t": "tok", "d": line})
             emit({"t": "sent", "d": line})
             emit({"t": "usage", "in": 0, "out": 0, "cost": 0, "cached": True})
             self.history.append({"role": "assistant", "content": line})
@@ -621,7 +636,7 @@ class InterviewAgent:
 
         text_out = self._generate(emit, directive, max_tokens=220)
         if self.interrupts:
-            self.check_recovery(text_out)          # 粗判：有没有从头重复被打断的那段
+            self.check_recovery(text_out)          # 粗判：有没有重复被打断前说过的那段
         self.history.append({"role": "assistant", "content": text_out})
         self.turns.append({
             "turn": turn_id + 0.1, "role": "agent", "text": text_out, "action": action,
@@ -649,7 +664,7 @@ class InterviewAgent:
 
     # -- 打断 --------------------------------------------------------
     def interrupt(self, ratio: float, spoken: str, heard: str) -> dict:
-        """记录一次打断。下一次生成时注入上下文，让模型接着断点说、不重复。"""
+        """记录一次打断。下一轮告诉模型：你停在哪、他插了什么，别再重复。"""
         ratio = max(0.0, min(1.0, float(ratio or 0)))
         rec = {
             "at": round(time.time() - self.started_at, 3),
@@ -665,19 +680,20 @@ class InterviewAgent:
         if heard:
             note = (
                 f"[系统] 你刚才说到「…{rec['spoken']}」时被候选人打断（已播报约 {int(ratio * 100)}%），"
-                f"他插话说：「{heard}」。先回应他这句，再用一句话把话接下去；"
-                "不要重复你被打断前说过的内容。"
+                f"他插话说：「{heard}」。先回应他这句，不要重复你被打断前说过的内容。"
+                "也不要把没说完的部分补念一遍——他已经在说别的事了。"
             )
         else:
             note = (
                 f"[系统] 你刚才说到「…{rec['spoken']}」时被打断（已播报约 {int(ratio * 100)}%），"
-                "候选人没有插话内容。从断点往后说完，不要重复已经说过的部分。"
+                "但没听清他插了什么，可能是没听清或者网络卡了。用一句话问他要不要你重说一遍，"
+                "不要自顾自往下讲。"
             )
         self.pending_interrupt = note
         return {"ok": True, "ratio": ratio, "interrupts": len(self.interrupts)}
 
     def check_recovery(self, new_text: str):
-        """代码粗判：新回复是否重复了被打断的那段。非盲评、只是代理指标。"""
+        """代码粗判：新回复有没有重复被打断前说过的那段。非盲评、只是代理指标。"""
         if not self.interrupts:
             return
         rec = self.interrupts[-1]
@@ -864,8 +880,18 @@ class InterviewAgent:
             strengths.append("没有出现「不知道」类放弃回答，遇到不会的题也在接")
         if m["questions"] >= m["max_questions"]:
             strengths.append(f"完整走完 {m['max_questions']} 个话题，没有中途放弃")
-        while len(strengths) < 3:
-            strengths.append("完成了整场对练，样本已记录，可用于对比下一场")
+        # 兜底补齐不能重复同一句：同一句话连写两遍，读者第一反应是这份复盘拼出来的。
+        # 模板复盘只谈指标、不假装懂内容，所以兜底也只说「记录本身」这类可核实的事。
+        fillers = [
+            "完成了整场对练，样本已记录，可用于对比下一场",
+            f"逐轮都有原文可回看（{m['user_turns']} 次开口），复盘不靠印象",
+            f"本场 {m['questions']} 个话题走完，下一场换个岗位就能横向对比",
+        ]
+        for s in fillers:
+            if len(strengths) >= 3:
+                break
+            if s not in strengths:
+                strengths.append(s)
 
         if m["probe_rate"] >= 0.35:
             improvements.append({
@@ -887,11 +913,28 @@ class InterviewAgent:
                 "issue": f"{m['actions']['switch']} 次换题，说明有几类问题完全没准备",
                 "fix": "把「没做过」换成「没直接做过，但我做过类似的是…」，先接住再转"
             })
-        while len(improvements) < 3:
-            improvements.append({
-                "issue": "收尾没有主动提问",
-                "fix": "准备 1 个反问：团队现在最想解决的问题是什么"
+        # 同理：改进项也不能重复同一句。兜底只放「由指标能直接看出来」的几条。
+        pool = [{
+            "issue": "收尾没有主动提问",
+            "fix": "准备 1 个反问：团队现在最想解决的问题是什么",
+        }]
+        if m["questions"] < m["max_questions"]:
+            pool.append({
+                "issue": f"只走了 {m['questions']} 个话题，样本偏少",
+                "fix": "先按同一个岗位多跑几场，再谈「我哪里弱」才有依据",
             })
+        if m["interrupts"]["count"] > 0:
+            pool.append({
+                "issue": f"被打断 {m['interrupts']['count']} 次，说明有抢话或超时",
+                "fix": "每答控制在 40 秒内，先给结论再补细节，别从头讲起",
+            })
+        seen = {i["issue"] for i in improvements}
+        for item in pool:
+            if len(improvements) >= 3:
+                break
+            if item["issue"] not in seen:
+                improvements.append(item)
+                seen.add(item["issue"])
 
         score = 55
         score += min(15, int(m["avg_answer_chars"] / 8))
@@ -1006,7 +1049,8 @@ def render_markdown(report: dict) -> str:
         "",
         "### 打断",
         f"- 次数 {itr.get('count', 0)}，平均打断位置 {int((itr.get('avg_ratio') or 0) * 100)}%",
-        f"- 恢复成功率 {itr.get('recovery_rate') if itr.get('recovery_rate') is not None else '—'}"
+        "- 被打断后它立刻停、不补念；这里看的是它有没有重复说过的话",
+        f"- 不重复率 {itr.get('recovery_rate') if itr.get('recovery_rate') is not None else '—'}"
         f"（代码粗判 / 自评，非盲评，样本 {itr.get('checked', 0)}）",
         "",
         "### 成本（实测）",
