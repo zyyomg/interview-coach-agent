@@ -9,6 +9,8 @@
 - 不注册、不建库、不上云，会话记录落在本地 `runs/`
 - 每场结束自动落盘，右上角「往期」能翻回任何一场：分数、改进、完整对话
 
+> **状态**：M1–M5 已完成，MVP 可跑通完整一场；M6（真实场景评测 10 场）进行中。代码链路自测全过，但"好不好用"还没有数据支撑——这一点下面第八节说清楚了。
+
 <p align="center">
   <img src="eval/shot-home.png" width="49%" alt="首页：选岗位，直接开口">
   <img src="eval/shot-chat.png" width="49%" alt="对话：每个动作都标了判定依据">
@@ -162,7 +164,7 @@ TTS 逐句播报时用 `utterance.onboundary` 记已播字符位置；用户开�
 │  ├─ index.html      界面结构
 │  ├─ style.css       样式
 │  └─ app.js          语音识别 / 分句播报 / 打断 / 计时 / 复盘渲染
-├─ selftest.py        链路自测：规则单测 + 8 场模拟 + HTTP 端到端
+├─ selftest.py        链路自测：规则单测 + 10 场模拟 + HTTP 端到端
 ├─ runs/              每场会话：session.json + report.md + report.json
 ├─ eval/              自测报告与界面截图
 └─ LICENSE            MIT
@@ -186,7 +188,7 @@ TTS 逐句播报时用 `utterance.onboundary` 记已播字符位置；用户开�
 ## 六、自测
 
 ```bash
-python selftest.py            # 规则单测 + 8 场 + HTTP 端到端，约 40 秒
+python selftest.py            # 规则单测 + 10 场 + HTTP 端到端，约 40 秒
 ```
 
 产出 `eval/自测-YYYYmmdd-HHMM.md`，包含：
@@ -208,7 +210,7 @@ python selftest.py            # 规则单测 + 8 场 + HTTP 端到端，约 40 �
 | M3 | 语音接入 + 分句播报 | ✅（Edge 上验证过识别与播报；Chrome 国内可能不通） |
 | M4 | 打断即停 | ✅（识别出 ≥4 个字才算打断；播报开头 500ms 与两次打断之间 2s 有保护期，避开外放自激；停下后不补念） |
 | M5 | 指标面板 + 复盘 + 成本统计 | ✅ |
-| M6 | 自己跑 10 场出评测 | ⏳ 链路自测已跑 8 场；**真实 10 场要接上 Key 自己练** |
+| M6 | 自己跑 10 场出评测 | ⏳ 链路自测已跑 10 场；**真实 10 场要接上 Key 自己练** |
 
 M6 待办（接上 Key 后）：
 

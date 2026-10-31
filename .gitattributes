@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+# GBK 编码的 Windows 批处理，禁止任何换行/编码转换，否则中文会乱码
+*.bat -text
+
+# 图片
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
