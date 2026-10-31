@@ -1,0 +1,17 @@
+# 密钥：只提交 .env.example，真实 Key 永不入库
+.env
+.env.local
+.env.*.local
+
+# 个人练习记录（目录由程序自动创建，内容含真实对话，不入库）
+runs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini

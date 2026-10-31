@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>面试陪练 · 会追问、会打断、会记分</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">面</div>
+      <div class="brand-txt">
+        <h1>面试陪练</h1>
+        <p>会追问 · 会打断 · 会记分</p>
+      </div>
+    </div>
+
+    <section class="card" id="setupCard">
+      <div class="lab">岗位</div>
+      <div class="seg" id="roleSeg" data-value="ai_pm">
+        <button data-v="ai_pm" class="on">AI 产品经理</button>
+        <button data-v="pm">产品经理</button>
+        <button data-v="general">通用</button>
+      </div>
+
+      <div class="lab">话题数</div>
+      <div class="seg tiny" id="roundSeg" data-value="8">
+        <button data-v="6">6</button>
+        <button data-v="8" class="on">8</button>
+        <button data-v="10">10</button>
+        <button data-v="12">12</button>
+      </div>
+
+      <div class="lab">语音</div>
+      <div class="row">
+        <button class="switch on" id="voiceSwitch" aria-label="语音开关"><span></span></button>
+        <span class="hint2" id="voiceHint">它会念，你说完自动接话</span>
+      </div>
+
+      <button class="primary" id="startBtn">开始对练</button>
+      <p class="fine">推荐 Edge，启动时会自动用它打开。Chrome 的语音识别国内可能不通，会自动降级成打字。</p>
+    </section>
+
+    <section class="card metrics">
+      <div class="mrow">
+        <span>话题进度</span>
+        <b id="mQ">— / —</b>
+      </div>
+      <div class="bar"><i id="mBar"></i></div>
+      <div class="grid2">
+        <div><b id="mTurns">0</b><i>回答轮次</i></div>
+        <div><b id="mProbe">0</b><i>追问</i></div>
+        <div><b id="mClarify">0</b><i>澄清</i></div>
+        <div><b id="mInterrupt">0</b><i>打断</i></div>
+      </div>
+      <div class="costline">
+        <span>本场成本</span>
+        <b id="mCost">¥0.0000</b>
+      </div>
+      <div class="costline sub">
+        <span>token（入 / 出）</span>
+        <b id="mTokens">0 / 0</b>
+      </div>
+    </section>
+
+    <section class="card tips">
+      <div class="lab">怎么说</div>
+      <ul>
+        <li>说完停 <b>1.2 秒</b>自动提交，不用按键</li>
+        <li>按住 <kbd>空格</kbd> 说话，松手就发</li>
+        <li>它还在念的时候开口，就算<span class="em">打断</span></li>
+      </ul>
+    </section>
+
+    <div class="spacer"></div>
+    <div class="foot">
+      <span class="dot" id="modeDot"></span>
+      <span id="modeText">检测中…</span>
+    </div>
+  </aside>
+
+  <main class="stage">
+    <header class="top">
+      <div class="status">
+        <span class="pulse" id="pulse"></span>
+        <span id="statusText">还没开始</span>
+      </div>
+      <div class="top-right">
+        <div class="hud">
+          <div class="chip"><b id="hudFirst">—</b><i>首字</i></div>
+          <div class="chip"><b id="hudAudio">—</b><i>首音</i></div>
+          <div class="chip"><b id="hudTotal">—</b><i>整轮</i></div>
+        </div>
+        <span class="top-div"></span>
+        <button class="hist-btn" id="histBtn" title="往期复盘">
+          <span class="hist-ico">◷</span>
+          <span class="hist-lab">往期</span>
+          <span class="hist-n" id="histCount"></span>
+        </button>
+      </div>
+    </header>
+
+    <div class="chat" id="chat">
+      <div class="empty" id="empty">
+        <div class="empty-mark">对练</div>
+        <h2>选个岗位，直接开口。</h2>
+        <p>面试官一次只问一个问题：你答得含糊它追问，答得漂亮它换题，你随时可以打断它。结束后给你一份复盘和一组数据。</p>
+        <div class="empty-tips">
+          <span>8 个话题约 10 分钟</span>
+          <span>一场约 ¥0.05</span>
+          <span>不需要注册</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer" id="composer">
+      <button class="mic" id="micBtn" title="点一下开始说（也可以按住空格）" disabled>
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>
+        </svg>
+        <span class="ring"></span>
+      </button>
+      <div class="inputwrap">
+        <input id="textInput" placeholder="还没开始 · 点左上角「开始对练」" autocomplete="off" disabled>
+      </div>
+      <button class="ghost" id="sendBtn" disabled>发送</button>
+      <button class="ghost danger" id="endBtn" disabled>结束</button>
+    </div>
+
+    <div class="tipbar" id="tipbar"></div>
+  </main>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <button class="close" id="closeModal" aria-label="关闭">×</button>
+    <div class="modal-body">
+    <div class="report-head">
+      <div class="score-ring" id="scoreRing"><span id="scoreNum">—</span><i>分</i></div>
+      <div class="report-title">
+        <h3 id="reportVerdict">复盘</h3>
+        <p id="reportSub">—</p>
+      </div>
+    </div>
+
+    <div class="two">
+      <div>
+        <h4>三条优势</h4>
+        <ul id="strengths"></ul>
+      </div>
+      <div>
+        <h4>三条改进</h4>
+        <ol id="improvements"></ol>
+      </div>
+    </div>
+
+    <h4>本场数据</h4>
+    <table class="tbl" id="reportTable"></table>
+
+    <div id="transcriptWrap" hidden>
+      <h4>对话回顾</h4>
+      <div class="turns" id="transcript"></div>
+    </div>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="againBtn">再练一场</button>
+      <button class="ghost" id="downloadBtn">下载复盘 .md</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="histModal" hidden>
+  <div class="modal-card hist-card">
+    <button class="close" id="closeHist" aria-label="关闭">×</button>
+    <h3 class="hist-title">往期复盘</h3>
+    <p class="hist-desc">每一场都存了复盘和对话，点一场看当时怎么答的。</p>
+    <div class="hist-list" id="histList"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

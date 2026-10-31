@@ -1,0 +1,32 @@
+{
+  "model": "deepseek-flash",
+  "api_base": "https://api.deepseek.com",
+  "_model_note": "若该账号返回 model 不存在，把 model 改成 deepseek-chat（同价目档位），其余不用动",
+
+  "max_questions": 8,
+  "max_probe_per_question": 2,
+  "max_clarify_per_question": 2,
+  "max_switch_per_question": 2,
+
+  "turn": {
+    "empty_chars": 4,
+    "short_chars": 22,
+    "max_sentence_chars": 60,
+    "soft_sentence_chars": 22,
+    "history_limit": 30
+  },
+
+  "price": {
+    "input_miss": 2.16,
+    "input_hit": 0.043,
+    "output": 8.64,
+    "usd_cny": 7.2,
+    "peak_note": "deepseek-flash peak：$0.30/$1.20 每百万 token，按 7.2 汇率折人民币"
+  },
+
+  "roles": {
+    "ai_pm": "AI 产品经理（实习）",
+    "pm": "产品经理",
+    "general": "通用岗位"
+  }
+}
