@@ -54,7 +54,7 @@
     tFirstAudio: 0,
     tDone: 0,
     reportedAudio: false,
-    timer: { silence: 0, barge: 0, silenceNudge: 0 },
+    timer: { silence: 0, barge: 0, silenceNudge: 0, asrProbe: 0 },
     silenceMs: 4500,     // 说完了停多久算说完。3 秒实测还是太急，用户停一下就被打断；跟 config 走
     nudgeMs: 5000,       // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
     closeMs: 5000,       // 催过之后还没动静，多久把这一场收掉（服务端可覆盖）→ 累计 10 秒
@@ -473,22 +473,27 @@
   const IS_EDGE = /Edg\//.test(navigator.userAgent || '');
   let rec = null;
 
-  function initRec() {
-    if (!SR) return;
-    rec = new SR();
-    rec.lang = 'zh-CN';
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.maxAlternatives = 1;
+  // 造一个识别器并绑好回调。
+  //
+  // 关键：**重连要换一个新对象**。已经卡死的 SpeechRecognition 实例再 start()
+  // 通常一个事件都不会回（引擎内部连接已经废了），只有换新的才真的能活过来。
+  // 之前重连是复用同一个 rec，所以"点语音开关重连"看着有反应、实际连不上。
+  function makeRec() {
+    if (!SR) return null;
+    const r = new SR();
+    r.lang = 'zh-CN';
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
 
-    rec.onstart = () => {
+    r.onstart = () => {
       S.listening = true;
       S.lastAsrAt = performance.now();
       paintMic();
       refreshStatus();
     };
 
-    rec.onspeechstart = () => {
+    r.onspeechstart = () => {
       S.hadSpeech = true;
       S.lastAsrAt = performance.now();
       S.lastVoiceAt = performance.now();
@@ -497,15 +502,16 @@
       // 真正的打断交给 onresult：识别出 ≥4 个有意义的字才算。
     };
 
-    rec.onresult = (e) => {
+    r.onresult = (e) => {
       S.lastAsrAt = performance.now();
       S.lastVoiceAt = performance.now();
       S.asrRestarts = 0;                  // 出字了就说明引擎活着，重连计数清零
+      S.asrDown = false;
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        const t = r[0] && r[0].transcript ? r[0].transcript : '';
-        if (r.isFinal) S.finalText += t;
+        const res = e.results[i];
+        const t = res[0] && res[0].transcript ? res[0].transcript : '';
+        if (res.isFinal) S.finalText += t;
         else interim += t;
       }
       S.interimText = interim;
@@ -528,7 +534,7 @@
       resetSilence();
     };
 
-    rec.onerror = (e) => {
+    r.onerror = (e) => {
       S.listening = false;
       paintMic();
       // 留一行日志：这次到底是哪种错，别让用户只能看到"连不上"三个字
@@ -549,16 +555,67 @@
       }
     };
 
-    rec.onend = () => {
+    r.onend = () => {
       S.listening = false;
       paintMic();
       if (S.wantListen && S.voice && S.session && !S.finished) setTimeout(startRec, 220);
     };
 
+    return r;
+  }
+
+  function initRec() {
+    rec = makeRec();
+    if (!rec) return;
     // 识别引擎会「假活」：麦克风按钮是开着的、S.listening 也是 true，
     // 但 onstart/onend/onresult 一个都不再来。实测一场对练在第 15 轮之后停在这个状态，
     // 表现就是"语音开着，不出字，也不提交"。onend 那条重启链救不了它——它压根不 fire。
     setInterval(asrGuardTick, 2000);
+  }
+
+  /**
+   * 统一的重连入口：换新识别器 + 解除暂停 + 给结果反馈。
+   *
+   * 为什么要把"解除暂停"也放进来：暂停时 startRec() 会直接返回，
+   * 用户按语音开关、按麦克风都毫无反应——实测就卡在这个组合上，
+   * 越按越像坏了。所以任何一条"我要用语音"的路径都先解除暂停。
+   */
+  function retryAsr() {
+    if (!SR) return;
+    if (S.paused) {
+      S.paused = false;
+      paintMic();
+    }
+    S.voice = true;
+    S.tts = true;
+    S.asrDown = false;
+    S.asrRestarts = 0;
+    S.lastAsrAt = 0;
+    $('voiceSwitch').classList.add('on');
+    $('voiceHint').textContent = '它会念，你说完自动接话';
+    try { if (rec) rec.abort(); } catch (e) { /* noop */ }
+    rec = makeRec();                 // 换新对象，不复用可能已死的那个
+    S.listening = false;
+    if (S.session && !S.finished) {
+      startRec();
+      armSilence();
+    }
+    refreshStatus();
+    paintMic();
+    tip('正在重连识别…');
+
+    clearTimeout(S.timer.asrProbe);
+    S.timer.asrProbe = setTimeout(() => {
+      if (S.listening) {
+        tip('识别重新连上了，继续说就行。');
+        return;
+      }
+      S.asrDown = true;
+      paintMic();
+      tip(`<b>还是连不上</b>　${IS_EDGE
+        ? '多半是网络或代理，或者系统里关掉了「在线语音识别」。'
+        : '换 Edge 试试。'}先打字，过一会儿再点「语音」开关重试。`);
+    }, 2500);
   }
 
   /**
@@ -672,7 +729,10 @@
     } else {
       setStatus('继续', '');
       if (S.session && !S.finished) {
-        if (S.voice && !S.asrDown) startRec();
+        // 恢复时如果识别是判死状态，别只调 startRec（它会在死对象上白试一次），
+        // 直接走重连入口，换一个新识别器
+        if (S.voice && S.asrDown) retryAsr();
+        else if (S.voice) startRec();
         armSilence();
         resumeSilence();
       }
@@ -1239,21 +1299,9 @@
 
     if (!S.voice) return;
 
-    // 重新打开语音 = 给识别一次真正的重试：重置判死标记、重连、马上开麦。
-    // 原来只把 asrDown 清成 false，但既没重连也没提示，用户只会觉得"开关点了没用"。
-    S.asrDown = false;
-    S.asrRetry = (S.asrRetry || 0) + 1;
-    if (!SR) {
-      degrade('这个浏览器没有语音识别（Chrome / Edge 才有 Web Speech API）。已切到打字模式。');
-      return;
-    }
-    tip('语音重新打开了，正在重连识别…');
-    S.lastAsrAt = 0;
-    if (S.session && !S.finished && !S.paused) {
-      startRec();
-      armSilence();
-    }
-    refreshStatus();
+    // 重新打开语音 = 一次真正的重连：换新识别器、解除暂停、给结果反馈。
+    // 原来只把 asrDown 清成 false，既没换对象也没提示，用户只会觉得"开关点了没用"。
+    retryAsr();
   });
 
   startBtn.addEventListener('click', startSession);
@@ -1286,14 +1334,9 @@
   input.addEventListener('keydown', () => { S.lastKeyAt = performance.now(); });
 
   micBtn.addEventListener('click', () => {
-    if (S.paused) return;
-    if (S.asrDown) {
-      // 识别已经判死：点了也不会有反应，必须说清楚；并告诉他怎么救回来
-      tip(IS_EDGE
-        ? '<b>识别服务现在连不上</b>　点麦克风没用，先打字；点左侧「语音」开关可以重连一次。'
-        : '<b>识别服务现在连不上</b>　先打字；换成 Edge 打开通常就好了。');
-      return;
-    }
+    // 暂停 / 识别判死时，点麦克风的意思都是"我现在想用嘴说"——
+    // 直接走重连（内部会解除暂停），而不是默默什么都不做。
+    if (S.paused || S.asrDown) { retryAsr(); return; }
     if (S.speaking) { interruptNow(''); return; }   // 它在说：照旧打断，但不算一次"插话"
     if (S.listening) { stopRec(); setStatus('麦克风关了 · 可以打字', ''); refreshStatus(); return; }
     if (S.finalText.trim()) { commitSpeech(); return; }

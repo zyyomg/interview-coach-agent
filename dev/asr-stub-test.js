@@ -299,6 +299,19 @@ const check = (ok, msg) => {
   S.voice = true;
   S.asrDown = false;
 
+  // ⑩ 「暂停 + 识别判死」时点麦克风要能救回来：解除暂停、换新识别器、开麦
+  //    实测就卡在这个组合上——暂停时 startRec 直接返回，按什么都没反应
+  S.voice = false;
+  S.asrDown = true;
+  S.paused = true;
+  const beforeInstances = sr.instances.length;
+  els.get('micBtn').click();
+  await flush();
+  check(S.paused === false && S.voice === true && S.asrDown === false,
+    '暂停 + 识别判死时点麦克风：解除暂停、语音重新打开');
+  check(sr.instances.length === beforeInstances + 1 && sr.started,
+    `…并且换了新的识别器、真的开麦了（新实例 ${sr.instances.length - beforeInstances} 个）`);
+
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);
 })();
