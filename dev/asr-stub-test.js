@@ -141,6 +141,7 @@ const TURN = [
 
 const timingPosts = [];
 let silencePosts = 0;
+let turnPosts = 0;
 global.fetch = async (url, opts) => {
   const u = String(url);
   // health 里带一个假阈值，用来验「配置有没有写错字段」
@@ -149,7 +150,7 @@ global.fetch = async (url, opts) => {
   if (u.includes('/api/timing')) { try { timingPosts.push(JSON.parse(opts.body)); } catch (e) { /* ignore */ } return ndjson([{ ok: true }]); }
   if (u.includes('/api/silence')) { silencePosts += 1; return ndjson([]); }
   if (u.includes('/api/session/start')) return ndjson(START);
-  if (u.includes('/api/turn')) return ndjson(TURN);
+  if (u.includes('/api/turn')) { turnPosts += 1; return ndjson(TURN); }
   return ndjson([{ ok: true }]);
 };
 
@@ -171,10 +172,10 @@ const check = (ok, msg) => {
   // 冷场阈值要从 health 里读进 nudgeMs，而且不能把「说完判定」的 silenceMs 覆盖掉
   // （曾经写错过：silenceMs 被改成 10 秒，于是每句话都要等 10 秒才提交）
   await flush();
-  check(S.nudgeMs === 1000 && S.silenceMs === 2000,
+  check(S.nudgeMs === 1000 && S.silenceMs === 3000,
     `冷场阈值来自 health（nudgeMs=${S.nudgeMs}）、说完判定没被覆盖（silenceMs=${S.silenceMs}）`);
   S.nudgeMs = 15000;        // 后面的用例按 15 秒跑，避免 1 秒就催
-  S.silenceMs = 2000;
+  S.silenceMs = 3000;
 
   // 模拟「页面开了 23 秒才点开始」：旧代码会把这一刻当 0 点，录出 23000ms
   now = 23000;
@@ -202,7 +203,7 @@ const check = (ok, msg) => {
   if (rec.onstart) rec.onstart();
   const beforeTurn = sr.startCalls;
   rec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: '我是产品经理，做过一个工具' } }] });
-  advance(2200);
+  advance(3300);              // 说完判定是 3 秒，之前是 2 秒
   await flush();
   advance(400);
   check(sr.startCalls > beforeTurn, `一轮说完了，麦克风自动接上（start ${sr.startCalls - beforeTurn} 次）`);
@@ -214,6 +215,31 @@ const check = (ok, msg) => {
   advance(17000);
   await flush();
   check(silencePosts > beforeNudge, `冷场 20 秒 → 主动催场（调了 ${silencePosts - beforeNudge} 次）`);
+
+  // ④ 点麦克风 = 只关麦，不发空轮
+  //    原来「关麦」会走 commitSpeech，识别为空但起过音 → 发一个空轮
+  //    → 后端判成 CLARIFY → 面试官说「我没听清，再说一遍」，用户只是想去打字
+  if (rec.onstart) rec.onstart();
+  const beforeMicTurn = turnPosts;
+  els.get('micBtn').click();
+  await flush();
+  check(turnPosts === beforeMicTurn, `点麦克风只关麦、不发空轮（turn 调用 ${turnPosts - beforeMicTurn} 次）`);
+
+  // ⑤ 暂停：整场冻住，不催场、不提交；再按一下接着来
+  if (rec.onstart) rec.onstart();
+  els.get('pauseBtn').click();
+  await flush();
+  const pausedSilence = silencePosts;
+  const pausedTurns = turnPosts;
+  advance(25000);
+  await flush();
+  check(S.paused === true, '点「暂停」进入暂停态');
+  check(silencePosts === pausedSilence && turnPosts === pausedTurns,
+    `暂停期间不催场、不提交（${silencePosts - pausedSilence} / ${turnPosts - pausedTurns}）`);
+  els.get('pauseBtn').click();
+  await flush();
+  advance(50);
+  check(S.paused === false && sr.started, '点「继续」恢复识别');
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);

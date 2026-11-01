@@ -8,6 +8,7 @@
   const micBtn = $('micBtn');
   const sendBtn = $('sendBtn');
   const endBtn = $('endBtn');
+  const pauseBtn = $('pauseBtn');
   const startBtn = $('startBtn');
   const tipbar = $('tipbar');
 
@@ -53,9 +54,11 @@
     tDone: 0,
     reportedAudio: false,
     timer: { silence: 0, barge: 0, silenceNudge: 0 },
-    silenceMs: 2000,     // 说完了停多久算说完。1.2 秒太急，用户喘口气就被当成说完了
-    nudgeMs: 15000,      // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
+    silenceMs: 3000,     // 说完了停多久算说完。2 秒太急——话说一半想词儿就被当成说完了
+    nudgeMs: 10000,      // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
     nudgeFails: 0,       // 连续失败次数：服务端没有这个接口时别一直打
+    paused: false,       // 手动暂停：不识别、不播报、不提交、不催场
+    typing: false,       // 鼠标在输入框里：这时不把识别结果往里写
     // 统计
     stats: { turns: 0, probe: 0, clarify: 0, switch: 0, interrupts: 0, question: 0, maxQ: 8, cost: 0, inTok: 0, outTok: 0 },
     report: null,
@@ -283,6 +286,9 @@
   function paintMic() {
     micBtn.classList.toggle('on', S.listening);
     micBtn.disabled = !S.session || S.finished || S.busy;
+    pauseBtn.disabled = !S.session || S.finished;
+    pauseBtn.classList.toggle('on', S.paused);
+    pauseBtn.textContent = S.paused ? '继续' : '暂停';
   }
 
   /* ------------------------------------------------------------ 语音播报 */
@@ -369,6 +375,7 @@
   function onSpeechIdle() {
     S.speaking = false;
     if (!S.session || S.finished) return;
+    if (S.paused) { refreshStatus(); return; }
     if (S.voice && !S.asrDown) {
       if (!S.listening) startRec();
       refreshStatus();
@@ -416,7 +423,11 @@
     S.stats.interrupts++;
     markInterrupt(ratio);
     paintStats();
-    post('/api/interrupt', { session: S.session, ratio, spoken, heard: heard || '' });
+    // 没听见他插什么（比如他只是点了下麦克风）就别记一次打断——
+    // 记了后端会生成"没听清你插什么"的回复，纯噪声。
+    if ((heard || '').trim()) {
+      post('/api/interrupt', { session: S.session, ratio, spoken, heard });
+    }
     // 识别本来就在跑（边说边听），这里不重启，否则会把刚识别到的话清掉
     if (S.voice && !S.asrDown && !S.listening) startRec();
     refreshStatus();
@@ -471,9 +482,13 @@
       }
       S.interimText = interim;
       const merged = (S.finalText + interim).trim();
-      // 不再只留最后 90 字：留够一整段，靠输入框自己换行 + 滚到底来显示最新内容
-      input.value = merged.slice(-400);
-      growInput();
+      // 鼠标在框里打字的时候不要写：否则识别结果会把用户正在打的字冲掉。
+      // 点进输入框会把麦克风关掉，所以正常情况下这里也不会被调用。
+      if (!S.typing) {
+        // 留够一整段，靠输入框自己换行 + 滚到底来显示最新内容
+        input.value = merged.slice(-400);
+        growInput();
+      }
 
       // 边说边听：识别到成句的内容，就算打断，不等 VAD
       if (S.speaking && merged.length >= 4 && canBarge(merged)) {
@@ -517,7 +532,7 @@
    * 也不要在用户思考 20 秒之后把他踢成打字模式。
    */
   function asrGuardTick() {
-    if (!rec || !S.session || S.finished) return;
+    if (!rec || !S.session || S.finished || S.paused) return;
     if (!S.voice || S.asrDown || !S.wantListen) return;
     if (S.speaking || S.busy) return;              // 它在说话 / 还在生成，不开麦
 
@@ -556,7 +571,7 @@
   }
 
   function startRec() {
-    if (!rec || !S.session || S.finished) return;
+    if (!rec || !S.session || S.finished || S.paused) return;
     // 先表决心：我要听。这句必须放在 early return 之前——
     // 否则「stop 之后立刻 start」时（提交完这一轮就会这样），
     // start 被 listening 挡回去，wantListen 留在 false，
@@ -583,9 +598,9 @@
 
   function resetSilence() {
     clearTimeout(S.timer.silence);
-    if (S.speaking || S.busy) return;      // 面试官在说或还在生成，不判"说完"
+    if (S.paused || S.speaking || S.busy) return;   // 暂停 / 它在说 / 还在生成：不判"说完"
     S.timer.silence = setTimeout(() => {
-      if (!S.speaking && !S.busy && S.finalText.trim()) commitSpeech();
+      if (!S.paused && !S.speaking && !S.busy && S.finalText.trim()) commitSpeech();
     }, S.silenceMs);
   }
 
@@ -594,6 +609,38 @@
   function resumeSilence() {
     if (!S.finalText.trim() || S.speaking || S.busy) return;
     resetSilence();
+  }
+
+  /* ------------------------------------------------------------ 暂停 */
+
+  // 用户要的：一句话说到一半想歇口气、或者想改成打字，能把整场冻住，再按一下接着来。
+  // 冻住的时候不识别、不播报、不提交、不催场——一切自动行为都停，只保留手动发送。
+  function togglePause(force) {
+    const want = typeof force === 'boolean' ? force : !S.paused;
+    if (want === S.paused) return;
+    S.paused = want;
+
+    if (want) {
+      disarmSilence();
+      clearTimeout(S.timer.silence);
+      stopRec();
+      S.speechToken += 1;
+      try { speechSynthesis.cancel(); } catch (e) { /* noop */ }
+      S.speaking = false;
+      S.utter = null;
+      S.queue.length = 0;
+      input.disabled = false;          // 暂停时至少还能打字
+      setStatus('已暂停 · 按「继续」接着来', '');
+    } else {
+      setStatus('继续', '');
+      if (S.session && !S.finished) {
+        if (S.voice && !S.asrDown) startRec();
+        armSilence();
+        resumeSilence();
+      }
+    }
+    paintMic();
+    refreshStatus();
   }
 
   /* ------------------------------------------------------------ 冷场 */
@@ -607,14 +654,15 @@
 
   function armSilence() {
     disarmSilence();
-    if (!S.session || S.finished || S.nudgeFails >= 3) return;
+    if (!S.session || S.finished || S.paused || S.nudgeFails >= 3) return;
     S.timer.silenceNudge = setTimeout(fireSilence, S.nudgeMs);
   }
 
   async function fireSilence() {
-    if (!S.session || S.finished || S.busy || S.speaking) return;
+    if (!S.session || S.finished || S.paused || S.busy || S.speaking) return;
     if ((S.finalText || '').trim() || (S.interimText || '').trim()) return;   // 他在说
-    if (input.value.trim()) return;                                          // 他在打字
+    // 只有"正在打字"才跳过：输入框里可能有识别残留，拿它当"人在忙"会永远不催
+    if (S.typing) return;
     if (S.lastVoiceAt && performance.now() - S.lastVoiceAt < 4000) return;    // 刚刚才说过话，先等等
     S.busy = true;
     paintMic();
@@ -639,7 +687,9 @@
     clearInput();
     S.finalText = '';
     S.interimText = '';
-    if (empty && !had) return;
+    // 没字就不发。原来只要"起过音"就发一个空轮，服务端会判成"没听清，再说一遍"，
+    // 用户只是想把麦克风关掉去打字，结果挨了一句"我没听清"——纯噪声。
+    if (empty) return;
     sendTurn(text, empty);
   }
 
@@ -667,8 +717,11 @@
     paintStats();
     setStatus('面试官上线', 'think');
     input.disabled = true;
-    input.placeholder = '语音开着就直接说；也可以打字，回车发送';
+    input.placeholder = '语音开着就直接说；想打字就在框里点一下，语音会自动让开';
     endBtn.disabled = false;
+    S.paused = false;
+    S.typing = false;
+    paintMic();
 
     // 开场也算一轮，计时基线必须在这里重置。
     // 之前没重置，第一轮的三段耗时是从「页面加载」算起的——实测录到过 23005ms，
@@ -689,6 +742,7 @@
           S.session = ev.id;
           S.mock = ev.mode === 'mock';
           S.stats.maxQ = ev.max_question;
+          input.disabled = false;        // 开了局就能打字，不用先关麦克风
           paintStats();
           paintMic();
           // 开场白也要能被打断：不在这里开麦，等它念完才开，
@@ -752,7 +806,7 @@
     S.busy = false;
     paintMic();
     refreshStatus();
-    if (!S.voice && !S.finished) { input.disabled = false; input.focus(); }
+    input.disabled = false;            // 生成完了就给回输入权（语音开着也能打字）
     resumeSilence();
   }
 
@@ -798,7 +852,7 @@
         if (ev.finished) { finishSession(); }
         else {
           refreshStatus();
-          if (!S.voice) { input.disabled = false; input.focus(); }
+          input.disabled = false;   // 语音开着也能打字：不再强制先关麦克风
           armSilence();       // 拿到新问题了，开始等他回答
         }
         break;
@@ -821,6 +875,7 @@
 
   async function finishSession() {
     S.finished = true;
+    S.paused = false;
     disarmSilence();
     stopRec();
     paintMic();
@@ -1027,10 +1082,24 @@
   });
 
   micBtn.addEventListener('click', () => {
-    if (S.speaking) { interruptNow(''); return; }
-    if (S.listening) { commitSpeech(); return; }
+    if (S.paused) return;
+    if (S.speaking) { interruptNow(''); return; }   // 它在说：照旧打断，但不算一次"插话"
+    if (S.listening) { stopRec(); setStatus('麦克风关了 · 可以打字', ''); refreshStatus(); return; }
     if (S.finalText.trim()) { commitSpeech(); return; }
     startRec();
+  });
+
+  pauseBtn.addEventListener('click', () => togglePause());
+
+  // 鼠标点进输入框 = 我要打字：这时把麦克风静静关掉（不提交、不记打断），
+  // 否则识别结果会一直往框里写，把正在打的字冲掉。
+  input.addEventListener('focus', () => {
+    S.typing = true;
+    if (S.listening) stopRec();
+  });
+  input.addEventListener('blur', () => {
+    S.typing = false;
+    if (S.session && !S.finished && !S.paused && S.voice && !S.asrDown && !S.listening) startRec();
   });
 
   // 空格按住说话

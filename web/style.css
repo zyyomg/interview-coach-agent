@@ -403,6 +403,7 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 .ghost:hover:not(:disabled) { border-color: #c9d2e6; color: var(--ink); }
 .ghost:disabled { opacity: .45; cursor: not-allowed; }
+.ghost.on { background: var(--amber-bg); border-color: #f0d9a8; color: var(--amber); }
 .ghost.danger { color: var(--red); border-color: #f2d4d1; }
 .ghost.danger:hover:not(:disabled) { background: #fff6f5; }
 
