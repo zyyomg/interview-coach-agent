@@ -34,6 +34,13 @@
         <button data-v="12">12</button>
       </div>
 
+      <div class="lab">难度</div>
+      <div class="seg" id="levelSeg" data-value="normal">
+        <button data-v="easy">简单</button>
+        <button data-v="normal" class="on">标准</button>
+        <button data-v="hard">困难</button>
+      </div>
+
       <div class="lab">语音</div>
       <div class="row">
         <button class="switch on" id="voiceSwitch" aria-label="语音开关"><span></span></button>
@@ -160,6 +167,11 @@
 
     <h4>本场数据</h4>
     <table class="tbl" id="reportTable"></table>
+
+    <div id="samplesWrap" hidden>
+      <h4>逐题：他问的、你怎么答的、可以怎么答</h4>
+      <div class="samples" id="samples"></div>
+    </div>
 
     <div id="transcriptWrap" hidden>
       <h4>对话回顾</h4>

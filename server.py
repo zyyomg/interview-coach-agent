@@ -46,13 +46,14 @@ VERSION = "0.1"
 
 
 class Session:
-    def __init__(self, role: str, rounds: int):
+    def __init__(self, role: str, rounds: int, level: str = "normal"):
         self.id = uuid.uuid4().hex[:12]
         self.lock = threading.Lock()
         self.created = time.time()
         self.agent = A.InterviewAgent(
             CONFIG, self.id, role, rounds,
             A.LLMClient(CONFIG, force_mock=STATE["mock"]),
+            level=level,
         )
 
     def save(self, report: dict | None = None) -> str:
@@ -163,7 +164,8 @@ class Handler(BaseHTTPRequestHandler):
             role = str(body.get("role") or "ai_pm")
             rounds = int(body.get("rounds") or CONFIG.get("max_questions", 8))
             rounds = max(4, min(20, rounds))
-            return self._start(role, rounds)
+            level = str(body.get("level") or CONFIG.get("level") or "normal")
+            return self._start(role, rounds, level)
 
         if path == "/api/turn":
             return self._turn(body)
@@ -225,14 +227,15 @@ class Handler(BaseHTTPRequestHandler):
 
         return emit
 
-    def _start(self, role: str, rounds: int):
-        sess = Session(role, rounds)
+    def _start(self, role: str, rounds: int, level: str = "normal"):
+        sess = Session(role, rounds, level)
         with LOCK:
             SESSIONS[sess.id] = sess
         self._open_stream()
         emit = self._emitter()
         emit({"t": "session", "id": sess.id, "role": sess.agent.role_key,
               "role_name": sess.agent.role_name, "max_question": sess.agent.max_questions,
+              "level": sess.agent.level_key, "level_name": sess.agent.level.get("name", "标准"),
               "mode": sess.agent.llm.mode})
         with sess.lock:
             sess.agent.begin(emit)

@@ -172,7 +172,9 @@ const check = (ok, msg) => {
 (async () => {
   const src = fs.readFileSync(process.env.APP_JS || APP, 'utf8');
   // 只在内存里把内部状态挂出来，不改文件；app.js 是 IIFE，否则外面看不见
-  eval(src.replace('const S = {', 'const S = global.__S = {'));   // eslint-disable-line no-eval
+  eval(src
+    .replace('const S = {', 'const S = global.__S = {')
+    .replace(/\}\)\(\);\s*$/, 'global.__ui = { renderSamples, renderReport };\n})();'));   // eslint-disable-line no-eval
 
   const S = global.__S;
   check(sr.instances.length === 1, `装载后只建了一个识别实例（${sr.instances.length}）`);
@@ -270,6 +272,21 @@ const check = (ok, msg) => {
   advance(9000);
   await flush();
   check(silencePosts > beforeTyping, `打字停下 6 秒后仍会催（${silencePosts - beforeTyping} 次）`);
+
+  // ⑧ 复盘渲染：逐题参考答法（有范本 / 演示模式无范本两种都要不报错）
+  let sampleOk = true;
+  try {
+    global.__ui.renderSamples({
+      per_round: [{ q: '你做过的最有代表性的项目？', comment: '有细节', sample: '我会说：把评测集从 20 条扩到 200 条，bad case 从 31% 降到 12%' }],
+      pairs: [{ q: '你做过的最有代表性的项目？', a: '我做过竞品体检' }],
+      mode: 'live',
+    });
+    global.__ui.renderSamples({ per_round: [{ q: 'x', comment: 'y', sample: '' }], pairs: [], mode: 'mock', generated_by: 'template' });
+  } catch (e) {
+    sampleOk = false;
+    console.error(e);
+  }
+  check(sampleOk, '复盘渲染：逐题参考答法两种数据都不报错');
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);

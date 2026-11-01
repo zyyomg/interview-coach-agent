@@ -16,6 +16,7 @@
     session: null,
     role: 'ai_pm',
     rounds: 8,
+    level: 'normal',      // easy / normal / hard：只影响判定阈值和提问深度
     voice: true,
     mock: true,
     busy: false,
@@ -781,7 +782,7 @@
     S.lastVoiceAt = 0;
 
     try {
-      await stream('/api/session/start', { role: S.role, rounds: S.rounds }, (ev) => {
+      await stream('/api/session/start', { role: S.role, rounds: S.rounds, level: S.level }, (ev) => {
         if (ev.t === 'session') {
           S.session = ev.id;
           S.mock = ev.mode === 'mock';
@@ -1015,6 +1016,7 @@
 
     const rows = [
       ['时长', (m.duration_s || 0) + ' 秒'],
+      ['难度', m.level_name || '标准'],
       ['话题', `${m.questions || 0} / ${m.max_questions || 0}`],
       ['回答轮次', `${m.user_turns || 0}（澄清 ${(m.actions || {}).clarify || 0}）`],
       ['平均回答', `${m.avg_answer_chars || 0} 字`],
@@ -1038,6 +1040,86 @@
       tr.appendChild(td2);
       tbl.appendChild(tr);
     });
+
+    renderSamples(r);
+  }
+
+  // 逐题：他问的 / 你当时答的 / 可以参考的答法。默认收起，点开才看。
+  function renderSamples(r) {
+    const box = $('samples');
+    const wrap = $('samplesWrap');
+    box.innerHTML = '';
+    const rounds = r.per_round || [];
+    const pairs = r.pairs || [];
+    const n = Math.max(rounds.length, pairs.length);
+    if (!n) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+
+    for (let i = 0; i < n; i++) {
+      const round = rounds[i] || {};
+      const pair = pairs[i] || {};
+      const sample = (round.sample || '').trim();
+      const qText = pair.q || round.q || `第 ${i + 1} 个话题`;
+
+      const item = document.createElement('div');
+      item.className = 'sample-item';
+
+      const head = document.createElement('button');
+      head.className = 'sample-head';
+      head.type = 'button';
+
+      const q = document.createElement('span');
+      q.className = 'sample-q';
+      q.textContent = qText;
+      const cmt = document.createElement('span');
+      cmt.className = 'sample-cmt';
+      cmt.textContent = round.comment || (sample ? '' : '这一题没有参考答法');
+      q.appendChild(cmt);
+
+      const tg = document.createElement('span');
+      tg.className = 'sample-toggle';
+      tg.textContent = sample ? '看参考答法' : '无范本';
+
+      head.appendChild(q);
+      head.appendChild(tg);
+
+      const body = document.createElement('div');
+      body.className = 'sample-body';
+      body.hidden = true;
+      if (pair.a) {
+        const lab = document.createElement('span');
+        lab.className = 'lab2';
+        lab.textContent = '你当时答的';
+        body.appendChild(lab);
+        const mine = document.createElement('div');
+        mine.className = 'mine';
+        mine.textContent = pair.a;
+        body.appendChild(mine);
+      }
+      if (sample) {
+        const lab2 = document.createElement('span');
+        lab2.className = 'lab2';
+        lab2.textContent = '可以这样答（范本，不要求背）';
+        body.appendChild(lab2);
+        const s = document.createElement('div');
+        s.textContent = sample;
+        body.appendChild(s);
+      } else if (r.mode === 'mock' || r.generated_by === 'template') {
+        const note = document.createElement('div');
+        note.className = 'mine';
+        note.textContent = '演示模式不生成参考答法——这一项要接上真模型才有。';
+        body.appendChild(note);
+      }
+
+      head.addEventListener('click', () => {
+        body.hidden = !body.hidden;
+        tg.textContent = body.hidden ? (sample ? '看参考答法' : '无范本') : '收起';
+      });
+
+      item.appendChild(head);
+      item.appendChild(body);
+      box.appendChild(item);
+    }
   }
 
   function resetAll() {
@@ -1089,6 +1171,7 @@
       seg.dataset.value = btn.dataset.v;
       if (seg.id === 'roleSeg') S.role = btn.dataset.v;
       if (seg.id === 'roundSeg') S.rounds = parseInt(btn.dataset.v, 10);
+      if (seg.id === 'levelSeg') S.level = btn.dataset.v;
     });
   });
 

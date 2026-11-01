@@ -70,23 +70,41 @@ def normalize(text: str) -> str:
     return _PUNCT.sub("", text or "")
 
 
-def has_detail(norm: str) -> bool:
-    """有数字或有结果词，才算"够具体"。全是态度和流程的答案，一律追问。"""
+def has_detail(norm: str, strict: bool = False) -> bool:
+    """有没有"具体内容"。
+
+    strict=False（简单/标准档）：有数字**或**结果词就算。
+    strict=True（困难档）：数字**和**结果词都要有——只报一个数不算，
+    要说清楚"从多少到多少、影响了什么"，否则追问。
+    """
     for w in _VAGUE_QTY:
         norm = norm.replace(w, "")
-    return bool(_NUM.search(norm) or _RESULT.search(norm))
+    num = bool(_NUM.search(norm))
+    res = bool(_RESULT.search(norm))
+    return (num and res) if strict else (num or res)
+
+
+def level_cfg(cfg: dict, level: str) -> dict:
+    """取当前难度的参数。配置里没有就退回标准档。"""
+    levels = cfg.get("levels") or {}
+    return levels.get(level) or levels.get("normal") or {}
 
 
 def decide(text: str, asr_empty: bool, probes: int, clarifys: int, cfg: dict,
-           switches: int = 0) -> dict:
+           switches: int = 0, level: str = "normal") -> dict:
     """纯函数：给定输入与当前题状态，返回该做什么 + 为什么。
 
     顺序即优先级，和策划书 4.2 的判定树一一对应。
     每个动作都有上限——没有上限的判定会把候选人卡死在同一题上。
+
+    难度只影响三个数（短句阈值、细节判定严不严）和之后生成时的提示词，
+    **不改变判定顺序**。
     """
     turn_cfg = cfg.get("turn", {})
+    lv = level_cfg(cfg, level)
     empty_chars = int(turn_cfg.get("empty_chars", 4))
-    short_chars = int(turn_cfg.get("short_chars", 22))
+    short_chars = int(lv.get("short_chars", turn_cfg.get("short_chars", 22)))
+    strict = bool(lv.get("strict_detail", False))
     max_probe = int(cfg.get("max_probe_per_question", 2))
     max_clar = int(cfg.get("max_clarify_per_question", 2))
     max_switch = int(cfg.get("max_switch_per_question", 2))
@@ -114,8 +132,9 @@ def decide(text: str, asr_empty: bool, probes: int, clarifys: int, cfg: dict,
     if n < short_chars:
         return {"action": PROBE, "reason": f"偏短（{n} 字 < {short_chars}）", "chars": n}
 
-    if not has_detail(norm):
-        return {"action": PROBE, "reason": f"没有数字也没有结果（{n} 字），属「有内容没细节」", "chars": n}
+    if not has_detail(norm, strict=strict):
+        why = "数字和结果都要有" if strict else "没有数字也没有结果"
+        return {"action": PROBE, "reason": f"{why}（{n} 字），属「有内容没细节」", "chars": n}
 
     return {"action": ASK, "reason": "够具体，进入下一题", "chars": n}
 
@@ -513,13 +532,16 @@ class InterviewAgent:
     """一场对练 = 一个 agent 实例。所有状态在内存里，结束落盘。"""
 
     def __init__(self, cfg: dict, session_id: str, role_key: str = "ai_pm",
-                 max_questions: int | None = None, llm: LLMClient | None = None):
+                 max_questions: int | None = None, llm: LLMClient | None = None,
+                 level: str = "normal"):
         self.cfg = cfg
         self.session_id = session_id
         self.role_key = role_key if role_key in (cfg.get("roles") or {}) else "general"
         self.role_name = cfg["roles"][self.role_key]
         self.max_questions = int(max_questions or cfg.get("max_questions", 8))
         self.llm = llm or LLMClient(cfg)
+        self.level_key = level if level in (cfg.get("levels") or {}) else "normal"
+        self.level = level_cfg(cfg, self.level_key)
 
         self.history = []            # 给模型的消息（assistant / user）
         self.turns = []              # 每轮判定记录
@@ -543,10 +565,12 @@ class InterviewAgent:
 
     # -- 提示词 ------------------------------------------------------
     def system_prompt(self) -> str:
+        depth = self.level.get("ask_note", "")
         return (
             f"你是一场「{self.role_name}」岗位的模拟面试官，正在和候选人做语音面试。\n"
             f"本次共 {self.max_questions} 个话题，现在是第 {max(1, self.question_index)} 个。\n"
-            "说话规则：\n"
+            + (f"本场难度：{depth}\n" if depth else "")
+            + "说话规则：\n"
             "1. 每次只说一句话：一个提问，或一句追问。不寒暄、不点评、不一次问两件事。\n"
             "2. 口语、短句，20–45 字。不用列表、不用 markdown、不用括号补充。\n"
             "3. 追问要紧扣候选人上一句里的具体词，问「怎么做的」「数据是多少」「为什么这么做」。\n"
@@ -649,7 +673,8 @@ class InterviewAgent:
         turn_id = self.turn_seq
         if normalize(text):
             self.silences = 0        # 开口了，冷场计数清零
-        decision = decide(text, asr_empty, self.probes, self.clarifys, self.cfg, self.switches)
+        decision = decide(text, asr_empty, self.probes, self.clarifys, self.cfg,
+                          self.switches, self.level_key)
         action = decision["action"]
 
         # 记录用户这轮
@@ -661,6 +686,12 @@ class InterviewAgent:
         })
         if normalize(text):
             self.history.append({"role": "user", "content": text})
+
+        # 已经问完最后一个话题：直接收尾，**不要再发一个"提问"的 meta**——
+        # 前端收到 meta 就会开一个气泡，接着 meta 又换成"收尾"，于是留下一个闪烁的空气泡。
+        if action == ASK and self.question_index >= self.max_questions:
+            self._close(emit, turn_id)
+            return
 
         emit({
             "t": "meta", "turn": turn_id, "action": action, "label": LABEL[action],
@@ -703,9 +734,6 @@ class InterviewAgent:
                 "一句话，语气正常，不要说「没关系」以外的安慰话。"
             )
         else:  # ASK
-            if self.question_index >= self.max_questions:
-                self._close(emit, turn_id)
-                return
             self.question_index += 1
             self.probes = 0
             self.clarifys = 0
@@ -929,6 +957,8 @@ class InterviewAgent:
             },
             "cost_cny": round(self.cost(), 4),
             "mode": self.llm.mode,
+            "level": self.level_key,
+            "level_name": self.level.get("name", "标准"),
         }
 
     # -- 复盘 --------------------------------------------------------
@@ -944,6 +974,15 @@ class InterviewAgent:
             {"role": t["role"], "text": t["text"], "action": t.get("action_label", "")}
             for t in self.turns if t["role"] == "user"
         ]
+        # 一问一答的配对：复盘里要能"看着自己的原话"对照参考答法
+        pairs, last_q = [], None
+        for t in self.turns:
+            if t["role"] == "agent":
+                last_q = t["text"]
+            elif t["role"] == "user" and last_q:
+                pairs.append({"q": last_q, "a": t["text"]})
+                last_q = None
+        gen["pairs"] = pairs[:12]
         gen["mode"] = "live" if self.llm.mode == "live" else "mock"
         self._report_cache = gen
         return gen
@@ -958,21 +997,28 @@ class InterviewAgent:
             f"【记录】\n{transcript[-3000:]}\n\n"
             f"【指标】回答 {m['answered']} 个话题，平均 {m['avg_answer_chars']} 字/答，"
             f"追问 {m['actions']['probe']} 次，澄清 {m['actions']['clarify']} 次，"
-            f"换题 {m['actions']['switch']} 次，打断 {m['interrupts']['count']} 次。\n\n"
+            f"换题 {m['actions']['switch']} 次，打断 {m['interrupts']['count']} 次。\n"
+            f"本场难度：{m.get('level_name', '标准')}。\n\n"
             "输出格式：\n"
             '{"score": 0-100 的整数, "verdict": "一句话总评，20 字内",'
             ' "strengths": ["优势1", "优势2", "优势3"],'
             ' "improvements": [{"issue": "问题", "fix": "具体改法"}],'
-            ' "per_round": [{"q": "问题简述", "comment": "一句话点评"}]}\n'
-            "要求：优势和改进各 3 条，必须引用候选人原话里的具体词；"
-            "改进项要给可执行动作，不要写「多练习」这种空话。"
+            ' "per_round": [{"q": "问题简述（15 字内）", "comment": "一句话点评他答得怎么样",'
+            ' "sample": "这道题的参考答法，80-120 字"}]}\n'
+            "要求：\n"
+            "1. 优势和改进各 3 条，必须引用候选人原话里的具体词；改进项要给可执行动作，"
+            "不要写「多练习」这种空话。\n"
+            "2. per_round 要覆盖每一个话题，sample 是**给用户学的那种答法**：用候选人第一人称，"
+            "2-3 句，必须带一个具体数字、一个真实做法或一个具体例子（比如「把 A 的评测集从 20 条扩到 200 条，"
+            "bad case 从 31% 降到 12%」），不要写「要有数据支撑」这种空话。\n"
+            "3. sample 写的是**更好的答法**，不是重复候选人说过的话。"
         )
         try:
             buf = []
             for ev in self.llm.stream(
                 [{"role": "system", "content": "你是资深面试官，说话直接、具体、不客套。"},
                  {"role": "user", "content": prompt}],
-                temperature=0.3, max_tokens=900, purpose="report",
+                temperature=0.3, max_tokens=1800, purpose="report",
             ):
                 if ev["type"] == "token":
                     buf.append(ev["text"])
@@ -1095,7 +1141,9 @@ class InterviewAgent:
             "strengths": strengths[:3],
             "improvements": improvements[:3],
             "per_round": [
-                {"q": f"第 {t['question']} 个话题", "comment": t["reason"]}
+                # 演示模式没有模型，给不出参考答法——这里留空，前端会说明原因，
+                # 不假装自己懂内容（模板复盘只谈指标）
+                {"q": f"第 {t['question']} 个话题", "comment": t["reason"], "sample": ""}
                 for t in self.turns if t["role"] == "user" and t["action"] != CLARIFY
             ][:8],
             "generated_by": "template",
@@ -1194,7 +1242,14 @@ def render_markdown(report: dict) -> str:
         "## 逐轮",
     ]
     for row in report.get("per_round", []):
-        lines.append(f"- {row.get('q', '')}：{row.get('comment', '')}")
+        lines.append(f"### {row.get('q', '')}")
+        if row.get("comment"):
+            lines.append(f"- 点评：{row.get('comment')}")
+        if row.get("sample"):
+            lines.append(f"- **参考答法**：{row.get('sample')}")
+        elif report.get("mode") == "mock" or report.get("generated_by") == "template":
+            lines.append("- 参考答法：演示模式不生成（没有模型可问）")
+        lines.append("")
 
     lines += [
         "",

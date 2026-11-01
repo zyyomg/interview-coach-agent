@@ -16,6 +16,29 @@
     "_note": "DeepSeek 思考模式默认是开的（effort=high）。对话必须关：否则思维链先占住 token，首音要等它想完；思维链还按输出 token 计费。复盘那一路开着，一次而已"
   },
 
+  "level": "normal",
+  "levels": {
+    "easy": {
+      "name": "简单",
+      "short_chars": 16,
+      "strict_detail": false,
+      "ask_note": "简单档：问题偏基础和经历类，允许候选人展开讲，不硬抠数字。"
+    },
+    "normal": {
+      "name": "标准",
+      "short_chars": 22,
+      "strict_detail": false,
+      "ask_note": "标准档：问题贴近真实面试，要求给出做法和大致结果。"
+    },
+    "hard": {
+      "name": "困难",
+      "short_chars": 34,
+      "strict_detail": true,
+      "ask_note": "困难档：要挖到具体数据、权衡和失败案例。候选人只给结论、不给数字，或者给了数字却说不出影响，都要追问。"
+    }
+  },
+  "_level_note": "难度只改三件事：短句阈值、细节判定多严（strict_detail 要求数字和结果都有）、面试官提问的深度提示。判定顺序不变",
+
   "turn": {
     "empty_chars": 4,
     "short_chars": 22,
