@@ -1137,7 +1137,13 @@
     }
     if (!d || d.error) return;
     if (!d.report) {
-      tip('这一场没有生成复盘（可能中途关掉了），但对话记录还在 runs/ 里。');
+      // 没有复盘不等于记录没了：中途刷新/关页面也会留下完整对话。
+      // 之前这里直接弹一句提示就关掉了，等于把能看的东西藏起来。
+      if (d.turns && d.turns.length) {
+        showTranscriptOnly(d);
+        return;
+      }
+      tip('这一场没有任何记录（可能刚开局就关了）。');
       $('histModal').hidden = true;
       return;
     }
@@ -1150,8 +1156,24 @@
     $('modal').hidden = false;
   }
 
-  function renderTranscript(turns) {
-    const box = $('transcript');
+  // 只有对话、没有复盘的那一场（中途刷新 / 提前关掉）
+  function showTranscriptOnly(d) {
+    $('scoreNum').textContent = '—';
+    $('scoreRing').style.setProperty('--p', 0);
+    $('reportVerdict').textContent = '这一场没有生成复盘';
+    $('reportSub').textContent = `${d.role || ''} · ${d.time || ''} · 中途结束`;
+    $('strengths').innerHTML = '';
+    $('improvements').innerHTML = '';
+    $('reportTable').innerHTML = '';
+    renderTranscript(d.turns);
+    $('transcriptWrap').hidden = false;
+    $('downloadBtn').hidden = true;
+    $('againBtn').textContent = '再练一场';
+    $('histModal').hidden = true;
+    $('modal').hidden = false;
+  }
+
+  function renderTranscript(turns) {    const box = $('transcript');
     box.innerHTML = '';
     (turns || []).forEach((t) => {
       if (!t || !t.text) return;
@@ -1187,9 +1209,16 @@
     if (e.target === $('histModal')) $('histModal').hidden = true;
   });
 
-  window.addEventListener('beforeunload', () => {
-    try { speechSynthesis.cancel(); } catch (e) {}
+  window.addEventListener('beforeunload', (e) => {
+    try { speechSynthesis.cancel(); } catch (err) { /* noop */ }
     stopRec();
+    // 刷新会把页面上的对话弄丢（记录还在 runs/，但过程看不见了）。
+    // 用户已经踩过一次，所以这里必须拦一下。
+    if (S.session && !S.finished) {
+      e.preventDefault();
+      e.returnValue = '这一场还没结束，刷新会丢掉页面上的对话。';
+      return e.returnValue;
+    }
   });
 
   /* ------------------------------------------------------------ 启动 */
@@ -1200,7 +1229,9 @@
     .then((r) => r.json())
     .then((h) => {
       S.mock = !!h.mock;
-      if (h.silence_seconds) S.silenceMs = h.silence_seconds * 1000;   // 冷场多久催一句，跟 config.json 走
+      // 注意别写错字段：silenceMs 是"说完判定"（2 秒），nudgeMs 是"冷场催场"。
+      // 这里曾经错写成 S.silenceMs，结果每句话都要等 10 秒才提交，看起来像"没发出去"。
+      if (h.silence_seconds) S.nudgeMs = h.silence_seconds * 1000;
       const dot = $('modeDot');
       dot.classList.add(S.mock ? 'mock' : 'live');
       $('modeText').textContent = S.mock

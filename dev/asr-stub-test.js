@@ -143,6 +143,8 @@ const timingPosts = [];
 let silencePosts = 0;
 global.fetch = async (url, opts) => {
   const u = String(url);
+  // health 里带一个假阈值，用来验「配置有没有写错字段」
+  if (u.includes('/api/health')) return { ok: true, json: async () => ({ ok: true, mock: true, model: 'x', silence_seconds: 1 }) };
   if (u.includes('/api/history')) return { ok: true, json: async () => ({ ok: true, items: [] }) };
   if (u.includes('/api/timing')) { try { timingPosts.push(JSON.parse(opts.body)); } catch (e) { /* ignore */ } return ndjson([{ ok: true }]); }
   if (u.includes('/api/silence')) { silencePosts += 1; return ndjson([]); }
@@ -165,6 +167,14 @@ const check = (ok, msg) => {
 
   const S = global.__S;
   check(sr.instances.length === 1, `装载后只建了一个识别实例（${sr.instances.length}）`);
+
+  // 冷场阈值要从 health 里读进 nudgeMs，而且不能把「说完判定」的 silenceMs 覆盖掉
+  // （曾经写错过：silenceMs 被改成 10 秒，于是每句话都要等 10 秒才提交）
+  await flush();
+  check(S.nudgeMs === 1000 && S.silenceMs === 2000,
+    `冷场阈值来自 health（nudgeMs=${S.nudgeMs}）、说完判定没被覆盖（silenceMs=${S.silenceMs}）`);
+  S.nudgeMs = 15000;        // 后面的用例按 15 秒跑，避免 1 秒就催
+  S.silenceMs = 2000;
 
   // 模拟「页面开了 23 秒才点开始」：旧代码会把这一刻当 0 点，录出 23000ms
   now = 23000;
