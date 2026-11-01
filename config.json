@@ -7,7 +7,7 @@
   "max_probe_per_question": 2,
   "max_clarify_per_question": 2,
   "max_switch_per_question": 2,
-  "silence_seconds": 15,
+  "silence_seconds": 10,
 
   "turn": {
     "empty_chars": 4,
