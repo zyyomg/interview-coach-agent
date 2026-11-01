@@ -177,6 +177,8 @@ TTS 逐句播报时用 `utterance.onboundary` 记已播字符位置；用户开�
 │  └─ app.js          语音识别 / 分句播报 / 打断 / 计时 / 复盘渲染
 ├─ selftest.py        链路自测：规则单测 + 10 场模拟 + HTTP 端到端
 ├─ tools.py           运维命令：check（验真实模式）· summary（汇总评测）
+├─ dev/
+│  └─ asr-stub-test.js  语音状态机桩测试（可选，需要 node，不用麦克风）
 ├─ runs/              每场会话：session.json + report.md + report.json
 ├─ eval/              自测报告与界面截图
 └─ LICENSE            MIT
@@ -221,6 +223,14 @@ python selftest.py            # 五层，约 40 秒
 **这份报告证明的是"链路跑通"，不是"效果好不好"。** 它用的是演示模型，延迟和成本都是链路证据，不是产品指标。
 
 自测产生的假会话写在系统临时目录、跑完即删，所以 `runs/` 里出现的每一条都是真练出来的——不然「往期复盘」和评测汇总会被自测数据污染。
+
+**语音状态机另有一层桩测试**（可选，需要 node，不需要麦克风、不起服务）：
+
+```bash
+node dev/asr-stub-test.js
+```
+
+它用假的 `SpeechRecognition` / `speechSynthesis` / `fetch` 跑真实的状态机，验证「开局开麦、识别假活能被心跳救回来、说完一轮麦克风能自己接上、开场耗时从点开始算起」。语音这块历史上 9 个 bug 里占 6 个，以前只能真开麦试，这层测试就是补这个窟窿。node 只是开发时用，`python server.py` 依赖的仍然只有标准库。
 
 ---
 

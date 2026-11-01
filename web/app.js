@@ -24,6 +24,8 @@
     speaking: false,
     listening: false,
     wantListen: false,
+    lastAsrAt: 0,        // 最后一次收到识别事件的时间，用来发现「mic 开着但没事件」
+    asrRestarts: 0,      // 本轮连续重连次数，超过上限就降级打字
     hadSpeech: false,
     tts: true,           // 播报开关，和"能不能识别"分开：识别挂了也不该闭嘴
     asrDown: false,
@@ -423,18 +425,22 @@
 
     rec.onstart = () => {
       S.listening = true;
+      S.lastAsrAt = performance.now();
       paintMic();
       refreshStatus();
     };
 
     rec.onspeechstart = () => {
       S.hadSpeech = true;
+      S.lastAsrAt = performance.now();
       // 这里不再直接判打断。外放时麦克风会拾到面试官自己的声音，
       // "一有起音就断"等于让它自己把自己打断（实测一场能误触五六次）。
       // 真正的打断交给 onresult：识别出 ≥4 个有意义的字才算。
     };
 
     rec.onresult = (e) => {
+      S.lastAsrAt = performance.now();
+      S.asrRestarts = 0;                  // 出字了就说明引擎活着，重连计数清零
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -471,6 +477,45 @@
       paintMic();
       if (S.wantListen && S.voice && S.session && !S.finished) setTimeout(startRec, 220);
     };
+
+    // 识别引擎会「假活」：麦克风按钮是开着的、S.listening 也是 true，
+    // 但 onstart/onend/onresult 一个都不再来。实测一场对练在第 15 轮之后停在这个状态，
+    // 表现就是"语音开着，不出字，也不提交"。onend 那条重启链救不了它——它压根不 fire。
+    setInterval(asrGuardTick, 2000);
+  }
+
+  /**
+   * 识别心跳。判断条件是"该它听的时候，连续一段时间一个识别事件都没有"。
+   *
+   * 注意这里只做一件事：把麦克风重开，不改模式、不降级。因为"用户在想事情"和
+   * "引擎死了"在事件层面长得一模一样——真静音时重开不会丢任何字（半句话一定会
+   * 先出 result，见 6.5），而引擎假活时重开是唯一的解药。宁可多开几次麦克风，
+   * 也不要在用户思考 20 秒之后把他踢成打字模式。
+   */
+  function asrGuardTick() {
+    if (!rec || !S.session || S.finished) return;
+    if (!S.voice || S.asrDown || !S.wantListen) return;
+    if (S.speaking || S.busy) return;              // 它在说话 / 还在生成，不开麦
+
+    if (!S.listening) {                            // 该听却没在听：接上，最多 5 秒一次
+      if (performance.now() - (S.lastAsrAt || 0) > 5000) startRec();
+      return;
+    }
+
+    // 前 3 次 12 秒救一次，还不活就放慢到 60 秒，别一直折腾麦克风
+    const idleMs = performance.now() - (S.lastAsrAt || 0);
+    if (idleMs < (S.asrRestarts > 3 ? 60000 : 12000)) return;
+
+    S.asrRestarts += 1;
+    if (S.asrRestarts === 4) {
+      tip('<b>识别连着几次没反应</b>　一直这样的话先点一下麦克风按钮、或者直接打字，别在这儿耗。');
+    }
+    S.lastAsrAt = performance.now();
+    try { rec.abort(); } catch (e) { /* noop */ }
+    S.listening = false;
+    // 留一行日志：用户下次说"又不出字了"，打开控制台就能看出是不是这个心跳在救
+    console.warn(`[asr] ${Math.round(idleMs / 1000)}s 没有任何识别事件，重开麦克风（第 ${S.asrRestarts} 次）`);
+    setTimeout(startRec, 60);
   }
 
   function degrade(msg) {
@@ -487,12 +532,18 @@
   }
 
   function startRec() {
-    if (!rec || S.listening || !S.session || S.finished) return;
+    if (!rec || !S.session || S.finished) return;
+    // 先表决心：我要听。这句必须放在 early return 之前——
+    // 否则「stop 之后立刻 start」时（提交完这一轮就会这样），
+    // start 被 listening 挡回去，wantListen 留在 false，
+    // 随后的 onend 看到 wantListen=false 就不重连了，麦克风从此静默。
+    S.wantListen = true;
+    if (S.listening) return;
     // 注意：这里绝对不能清 finalText。
     // 识别引擎在静默几秒后会自己 onend，代码再 startRec 把它接上——
     // 如果这时把缓冲清了，用户说到一半的半句话就没了（"前半段没录进去"）。
     // 清空只发生在「这一轮已经提交」之后。
-    S.wantListen = true;
+    S.lastAsrAt = performance.now();      // 重开一次，心跳重新计时
     try { rec.start(); } catch (e) { /* 已在跑 */ }
   }
 
@@ -500,6 +551,10 @@
     S.wantListen = false;
     clearTimeout(S.timer.silence);
     if (rec && S.listening) { try { rec.stop(); } catch (e) { /* noop */ } }
+    // 不要等 onend 再改状态：引擎假活的时候 onend 永远不来，
+    // 按钮就会一直卡在"开着"，点也点不动。这里主观认定它已经停了。
+    S.listening = false;
+    paintMic();
   }
 
   function resetSilence() {
@@ -555,6 +610,18 @@
     input.disabled = true;
     input.placeholder = '语音开着就直接说；也可以打字，回车发送';
     endBtn.disabled = false;
+
+    // 开场也算一轮，计时基线必须在这里重置。
+    // 之前没重置，第一轮的三段耗时是从「页面加载」算起的——实测录到过 23005ms，
+    // 这个假数会直接混进复盘里的 P50。
+    S.tSpeechEnd = performance.now();
+    S.tFirstToken = 0;
+    S.tFirstAudio = 0;
+    S.tDone = 0;
+    S.fullText = '';
+    S.sentChars = 0;
+    S.spokenChars = 0;
+    S.asrRestarts = 0;
 
     try {
       await stream('/api/session/start', { role: S.role, rounds: S.rounds }, (ev) => {
