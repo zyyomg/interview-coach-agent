@@ -287,6 +287,28 @@
     paintStats();
   }
 
+  function paintSpend() {
+    const d = S.spend;
+    const el = $('mSpend');
+    if (!el) return;
+    if (!d) { el.textContent = '—'; return; }
+    const total = Number(d.total_cny || 0);
+    el.textContent = `¥${total.toFixed(4)}（${d.live_sessions || 0} 场真实）`;
+    el.title = `真实模式累计 ¥${total.toFixed(4)}，共 ${d.live_sessions || 0} 场；`
+      + `演示模式 ${d.mock_sessions || 0} 场不计入（那是估算值，没真花钱）`;
+  }
+
+  // 累计花费要把「这一轮刚花的」算进去：服务端落盘比 done 事件晚一点点，
+  // 所以这里等 400ms 再拉，避免看到旧数字。
+  async function loadSpend(delay) {
+    if (delay) await new Promise((r) => setTimeout(r, delay));
+    try {
+      const r = await fetch('/api/spend');
+      S.spend = await r.json();
+      paintSpend();
+    } catch (e) { /* 拉不到就保持原值，不打扰用户 */ }
+  }
+
   function paintMic() {
     micBtn.classList.toggle('on', S.listening);
     micBtn.disabled = !S.session || S.finished || S.busy;
@@ -913,6 +935,7 @@
         if (S.bubble && S.bubble.caret) S.bubble.caret.remove();
         applyState(ev.state);
         postTiming();
+        loadSpend(400);           // 每轮结束刷一次累计花费
         if (ev.finished) { finishSession(); }
         else {
           refreshStatus();
@@ -1512,5 +1535,7 @@
     });
 
   paintStats();
+  paintSpend();
+  loadSpend();
   loadHistory();
 })();

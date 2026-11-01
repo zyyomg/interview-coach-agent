@@ -115,6 +115,9 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/api/spend":
+            return self._json({"ok": True, **_spend_summary()})
+
         if path == "/api/history":
             qs = parse_qs(urlparse(self.path).query)
             fid = (qs.get("id") or [""])[0]
@@ -357,6 +360,36 @@ def open_browser(url: str) -> str:
             pass
     webbrowser.open(url)
     return "default"
+
+
+def _spend_summary() -> dict:
+    """接上 Key 以来的累计花费：把 runs/ 里**真实模式**场次的成本加起来。
+
+    演示模式的成本是按价目估算的，没真花钱，所以单独计数、不进合计——
+    把估算值混进"花了多少钱"里就是假账。
+    """
+    total = 0.0
+    live_n = 0
+    mock_n = 0
+    if not RUNS.exists():
+        return {"total_cny": 0.0, "live_sessions": 0, "mock_sessions": 0}
+    for folder in RUNS.iterdir():
+        if not folder.is_dir():
+            continue
+        sess = folder / "session.json"
+        if not sess.exists():
+            continue
+        try:
+            d = json.loads(sess.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        cost = float((d.get("metrics") or {}).get("cost_cny") or 0)
+        if d.get("mode") == "live":
+            total += cost
+            live_n += 1
+        else:
+            mock_n += 1
+    return {"total_cny": round(total, 4), "live_sessions": live_n, "mock_sessions": mock_n}
 
 
 def _history_list(limit: int = 30) -> list:
