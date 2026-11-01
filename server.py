@@ -109,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
                 "questions": CONFIG.get("max_questions"),
                 "roles": CONFIG.get("roles"),
                 "silence_seconds": CONFIG.get("silence_seconds", 5),
-                "silence_close_seconds": CONFIG.get("silence_close_seconds", 8),
+                "silence_close_seconds": CONFIG.get("silence_close_seconds", 5),
             })
             return
 

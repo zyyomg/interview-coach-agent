@@ -1207,7 +1207,7 @@ def load_config(path: Path | str | None = None) -> dict:
     cfg.setdefault("max_clarify_per_question", 2)
     cfg.setdefault("max_switch_per_question", 2)
     cfg.setdefault("silence_seconds", 5)
-    cfg.setdefault("silence_close_seconds", 8)
+    cfg.setdefault("silence_close_seconds", 5)
     cfg.setdefault("turn", {})
     for k, v in (("empty_chars", 4), ("short_chars", 22), ("max_sentence_chars", 60),
                  ("soft_sentence_chars", 22), ("history_limit", 30)):
