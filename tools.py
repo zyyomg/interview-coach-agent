@@ -6,6 +6,8 @@
                                      真实一轮的首字延迟和开销是多少
     python tools.py summary          汇总 runs/ 里的往期对练，出 M6 那张表
     python tools.py summary --write  同上，并写进 eval/
+    python tools.py exclude <场次> --reason "..."   把某一场排除出评测统计
+                                     （识别断连、打字补答的场次，数据不可比）
 
 为什么单独一个文件：server.py 只负责服务，agent.py 只负责对话引擎。
 这两件事都是"人偶尔跑一次"的运维动作，塞进核心文件只会让它们变长。
@@ -27,6 +29,9 @@ import agent as A
 BASE = Path(__file__).resolve().parent
 RUNS = BASE / "runs"
 EVAL = BASE / "eval"
+
+# 排除标记：放在 runs/<场次>/ 下，存在即代表这场不计入评测统计
+EXCLUDE_FILE = "exclude.json"
 
 
 # ---------------------------------------------------------------- check
@@ -153,6 +158,23 @@ def cmd_check(args) -> int:
 
 # ---------------------------------------------------------------- summary
 
+def _exclude_reason(folder: Path) -> str | None:
+    """这场是否被标记排除。返回 None = 正常计入；返回字符串 = 排除理由。
+
+    为什么用独立文件而不是改 session.json：原始记录必须保持原样，
+    排除是事后判定，要能一眼看出「哪些场次被排除、为什么排除」。
+    隐藏掉的样本才叫挑数据，摆出来的不算。
+    """
+    p = folder / EXCLUDE_FILE
+    if not p.exists():
+        return None
+    try:
+        reason = str(json.loads(p.read_text(encoding="utf-8")).get("reason") or "").strip()
+    except (OSError, ValueError):
+        reason = ""
+    return reason or "（未填原因）"
+
+
 def _collect() -> list:
     rows = []
     if not RUNS.exists():
@@ -190,6 +212,7 @@ def _collect() -> list:
             "score": score,
             "estimated": bool((m.get("usage") or {}).get("estimated")),
             "timings": d.get("timings") or {},
+            "exclude_reason": _exclude_reason(folder),
         })
     return rows
 
@@ -242,7 +265,9 @@ def cmd_summary(args) -> int:
     # 开局就报错、一个字都没答的会话不该算进评测：它没有数据，只有一条错误记录
     empty = [r for r in rows if not r["answered"]]
     rows = [r for r in rows if r["answered"]]
-    live = [r for r in rows if r["mode"] == "live"]
+    live_all = [r for r in rows if r["mode"] == "live"]
+    live = [r for r in live_all if r["exclude_reason"] is None]
+    excluded = [r for r in live_all if r["exclude_reason"] is not None]
     mock = [r for r in rows if r["mode"] != "live"]
 
     out = ["# 评测汇总", ""]
@@ -255,7 +280,7 @@ def cmd_summary(args) -> int:
         ]
     else:
         out += [f"`runs/` 共 {len(rows) + len(empty)} 场"
-                f"（计入统计 {len(rows)} 场：真实 {len(live)}、演示 {len(mock)}）。", ""]
+                f"（计入统计 {len(rows) - len(excluded)} 场：真实 {len(live)}、演示 {len(mock)}）。", ""]
         if empty:
             out += [f"另有 {len(empty)} 场 0 轮回答，多半是开局就报错了，不计入统计。", ""]
         out += ["## 真实模式（M6 评测口径）", ""]
@@ -269,6 +294,11 @@ def cmd_summary(args) -> int:
             out += ["", note]
         else:
             out += ["**0 场 —— M6 还没开始。** 下面的演示模式数据只证明链路通，不能当评测数据用。"]
+        if excluded:
+            out += ["", f"### 已排除 {len(excluded)} 场（不计入上面的统计与 P50）", ""]
+            for r in excluded:
+                out += [f"- `{r['folder']}`　{r['exclude_reason']}"]
+            out += ["", "> 排除规则必须在开跑前定好。跑完再挑，就是挑数据；摆出来的不算。"]
         out += ["", "## 演示模式（只证明链路，不是评测）", ""]
         if mock:
             out += _table(mock)
@@ -291,6 +321,33 @@ def cmd_summary(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- exclude
+
+def cmd_exclude(args) -> int:
+    """把某一场标记为「不计入评测统计」。
+
+    典型用途：在线识别断连，那一轮是打字补答的，延迟和澄清率都不可信。
+    标记之后记录仍在 runs/ 里，只是不进 P50 和统计表。
+    """
+    folder = RUNS / args.folder
+    if not folder.is_dir():
+        print(f"没有这个场次：{folder}")
+        print("先用 ls runs/ 看目录名（形如 20261101-220031-d7bc39）。")
+        return 1
+    reason = (args.reason or "").strip()
+    if not reason:
+        print('必须写理由：--reason "识别断连 3 次，第 4 轮用打字补答"')
+        return 1
+    payload = {"reason": reason, "at": time.strftime("%Y-%m-%d %H:%M")}
+    # 直接写 UTF-8（不带 BOM）：PowerShell 的 Set-Content -Encoding UTF8 会加 BOM，json 读不了
+    (folder / EXCLUDE_FILE).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"已排除：{folder.name}")
+    print(f"理由　：{reason}")
+    print("再跑一次 python tools.py summary，确认它已经不在统计里。")
+    return 0
+
+
 # ---------------------------------------------------------------- 入口
 
 def main() -> int:
@@ -303,6 +360,11 @@ def main() -> int:
     p2 = sub.add_parser("summary", help="汇总 runs/ 里的往期对练")
     p2.add_argument("--write", action="store_true", help="把结果写进 eval/")
     p2.set_defaults(func=cmd_summary)
+
+    p3 = sub.add_parser("exclude", help="把某一场标记为排除（不计入评测统计）")
+    p3.add_argument("folder", help="runs/ 下的目录名，如 20261101-220031-d7bc39")
+    p3.add_argument("--reason", required=True, help="为什么排除，会原样写进汇总表")
+    p3.set_defaults(func=cmd_exclude)
 
     args = parser.parse_args()
     return args.func(args)
