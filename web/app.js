@@ -55,7 +55,9 @@
     reportedAudio: false,
     timer: { silence: 0, barge: 0, silenceNudge: 0 },
     silenceMs: 3000,     // 说完了停多久算说完。2 秒太急——话说一半想词儿就被当成说完了
-    nudgeMs: 10000,      // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
+    nudgeMs: 5000,       // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
+    closeMs: 8000,       // 催过之后还没动静，多久把这一场收掉（服务端可覆盖）
+    nudges: 0,           // 已经催过几次；用户一开口就清零
     nudgeFails: 0,       // 连续失败次数：服务端没有这个接口时别一直打
     paused: false,       // 手动暂停：不识别、不播报、不提交、不催场
     typing: false,       // 鼠标在输入框里：这时不把识别结果往里写
@@ -496,7 +498,8 @@
         interruptNow(merged);
         return;
       }
-      armSilence();                     // 他开口了，冷场计时从头算
+      S.nudges = 0;                     // 他开口了，催场次数清零
+      armSilence();                     // 冷场计时从头算
       resetSilence();
     };
 
@@ -656,7 +659,9 @@
   function armSilence() {
     disarmSilence();
     if (!S.session || S.finished || S.paused || S.nudgeFails >= 3) return;
-    S.timer.silenceNudge = setTimeout(fireSilence, S.nudgeMs);
+    // 第一次是「催一句」，催过之后等的是「再没动静就收尾」，两个时长不一样
+    const wait = S.nudges > 0 ? S.closeMs : S.nudgeMs;
+    S.timer.silenceNudge = setTimeout(fireSilence, wait);
   }
 
   // 每次跳过都把理由写进控制台。这个功能已经因为"静默跳过"排查过一轮了，
@@ -687,8 +692,23 @@
       armSilence();     // 跳过也必须把下一次挂上，否则冷场从此失效
       return;
     }
-    console.info('[nudge] 触发：主动接一句');
+    console.info(`[nudge] 触发：${S.nudges > 0 ? '第二次沉默，收尾' : '主动接一句'}`);
+    S.nudges += 1;                 // 第 2 次由服务端收尾并结束本场
     S.busy = true;
+    // 和第 1 轮一样重置播报状态：不重置的话，催场那句话会接在上一轮的文字后面
+    // （实测出现过「上一个问题 + 不着急，想到什么说什么」拼在同一个气泡里）
+    S.tSpeechEnd = performance.now();
+    S.tFirstToken = 0;
+    S.tFirstAudio = 0;
+    S.tDone = 0;
+    S.fullText = '';
+    S.sentChars = 0;
+    S.spokenChars = 0;
+    S.interrupted = false;
+    S.reportedAudio = false;
+    S.bubble = null;
+    S.queue.length = 0;
+    paintHUD();
     paintMic();
     refreshStatus();
     try {
@@ -798,6 +818,7 @@
     // 发出去了就别再占着输入框：光标留在框里会让 S.typing 一直是 true，
     // 冷场判断会以为用户还在打字，永远不催。（这个坑实测踩到过）
     S.typing = false;
+    S.nudges = 0;
     if (document.activeElement === input) input.blur();
     disarmSilence();                 // 已经开口了，冷场计时作废
     S.tSpeechEnd = performance.now();
@@ -1330,9 +1351,10 @@
     .then((r) => r.json())
     .then((h) => {
       S.mock = !!h.mock;
-      // 注意别写错字段：silenceMs 是"说完判定"（2 秒），nudgeMs 是"冷场催场"。
+      // 注意别写错字段：silenceMs 是"说完判定"（3 秒），nudgeMs 是"冷场催场"。
       // 这里曾经错写成 S.silenceMs，结果每句话都要等 10 秒才提交，看起来像"没发出去"。
       if (h.silence_seconds) S.nudgeMs = h.silence_seconds * 1000;
+      if (h.silence_close_seconds) S.closeMs = h.silence_close_seconds * 1000;
       const dot = $('modeDot');
       dot.classList.add(S.mock ? 'mock' : 'live');
       $('modeText').textContent = S.mock

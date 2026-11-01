@@ -259,12 +259,15 @@ const check = (ok, msg) => {
   check(silencePosts > beforeIdleTyping, `光标在框里但没打字 → 照样催场（${silencePosts - beforeIdleTyping} 次）`);
 
   // ⑦ 刚敲过键盘 → 不催，而且过了 6 秒还得能恢复（跳过时也要重挂计时）
+  S.nudges = 0;          // 按"第一次冷场"的节奏来测
+  S.nudgeMs = 3000;
+  S.closeMs = 3000;
   S.lastKeyAt = performance.now();
   const beforeTyping = silencePosts;
-  advance(9000);
+  advance(4000);
   await flush();
   check(silencePosts === beforeTyping, '刚敲过键盘 → 不催场');
-  advance(20000);
+  advance(9000);
   await flush();
   check(silencePosts > beforeTyping, `打字停下 6 秒后仍会催（${silencePosts - beforeTyping} 次）`);
 

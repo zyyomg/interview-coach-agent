@@ -446,7 +446,11 @@ class LLMClient:
         kw = _snip(last_user)
         if len(kw) < 3 or any(w in kw for w in GIVEUP_WORDS):
             kw = ""              # 太短或本身就是"没做过"，别复述了
-        if "追问" in directive:
+        # "收尾"要放在最前面判：收尾的指令里常带"不要追问"这类话，
+        # 先匹配"追问"就会把收尾演成一次追问（演示模式实测踩到过）
+        if "收尾" in directive:
+            line = MOCK_CLOSE
+        elif "追问" in directive:
             if kw:
                 line = MOCK_PROBES_ECHO[(qidx + len(user_msgs)) % len(MOCK_PROBES_ECHO)].format(kw=kw)
             else:
@@ -455,8 +459,6 @@ class LLMClient:
             # 换题一定伴随"没做过/不知道"，复述原话只会重复那句放弃，所以这里只换方向
             line = MOCK_SWITCH[self._rot % len(MOCK_SWITCH)]
             self._rot += 1
-        elif "收尾" in directive:
-            line = MOCK_CLOSE
         else:
             bank = MOCK_BANK.get(role_key, MOCK_BANK["general"])
             line = bank[(qidx - 1) % len(bank)]
@@ -696,17 +698,22 @@ class InterviewAgent:
         emit({"t": "done", "turn": turn_id, "question": self.question_index,
               "state": self.state(), "finished": False})
 
-    def _close(self, emit, turn_id: int):
+    def _close(self, emit, turn_id: int, reason: str | None = None, directive: str | None = None):
         emit({"t": "meta", "turn": turn_id, "action": CLOSE, "label": LABEL[CLOSE],
-              "reason": f"已完成 {self.max_questions} 个话题", "question": self.question_index,
+              "reason": reason or f"已完成 {self.max_questions} 个话题", "question": self.question_index,
               "max_question": self.max_questions})
-        line = self._generate(emit, "这是最后一个话题之后的收尾。只说一句收尾话，不总结、不点评。", max_tokens=80)
+        line = self._generate(
+            emit,
+            directive or "这是最后一个话题之后的收尾。只说一句收尾话，不总结、不点评。",
+            max_tokens=80,
+        )
         self.history.append({"role": "assistant", "content": line})
         self.finished = True
         self.ended_at = time.time()
         self.turns.append({
             "turn": turn_id + 0.1, "role": "agent", "text": line, "action": CLOSE,
-            "action_label": LABEL[CLOSE], "reason": "收尾", "question": self.question_index,
+            "action_label": LABEL[CLOSE], "reason": reason or "收尾",
+            "question": self.question_index,
             "ts": round(time.time() - self.started_at, 3),
         })
         emit({"t": "done", "turn": turn_id, "question": self.question_index,
@@ -714,17 +721,18 @@ class InterviewAgent:
 
     # -- 冷场 --------------------------------------------------------
     def silence(self, emit):
-        """候选人一直没开口时，面试官主动接一句。
+        """候选人一直没开口时，面试官主动接一句；再没动静就把这场收了。
 
         为什么不走 decide()：空文本在那儿会被判成 CLARIFY（那是给识别失败用的），
         连催两次就变成「我没听清」，用户会以为麦克风坏了——而这里的事实是
-        「他没说话」，该做的是催一句或者换个更好开口的问法。
+        「他没说话」，该做的是催一句，再没人接就把面试收掉、给他一份复盘。
+
+        第 1 次：催一句（模板，0 token）
+        第 2 次：收尾并结束本场（前端会把复盘弹出来）
+        之后：什么都不发，已经结束了
         """
-        max_switch = int(self.cfg.get("max_switch_per_question", 2))
         if self.silences >= 2:
-            return      # 催过一句、也换过问法了，再刷屏只会烦人，安静等他自己说
-        if self.silences == 1 and self.switches >= max_switch:
-            return      # 想换，但本题换题次数已经到上限了
+            return      # 已经催过、也收过了，别重复
 
         self.silences += 1
         self.turn_seq += 1
@@ -749,27 +757,13 @@ class InterviewAgent:
                   "state": self.state(), "finished": False})
             return
 
-        # 第二次还没动静：换个更基础的问法，这句要模型说
-        self.switches += 1
-        self.probes = 0
-        self.easier = min(2, self.easier + 1)
-        emit({"t": "meta", "turn": turn_id, "action": SWITCH, "label": LABEL[SWITCH],
-              "reason": "两次没开口，换个更好开口的问法", "question": self.question_index,
-              "max_question": self.max_questions})
-        text = self._generate(
-            emit,
-            "候选人连着两次都没开口，可能是这题太大。换一个更基础、更容易开口的同类问题，"
-            "一句话，语气正常，不要安慰他。",
-            max_tokens=200,
+        # 催过之后还是没动静：不硬撑，收尾并结算这一场
+        self._close(
+            emit, turn_id,
+            reason="催过之后仍然没开口，本场到此为止",
+            directive="候选人催过一次还是没开口，这场就到这里。只说一句收尾话，"
+                      "不点评、不总结，语气正常。",
         )
-        self.history.append({"role": "assistant", "content": text})
-        self.turns.append({
-            "turn": turn_id + 0.1, "role": "agent", "text": text, "action": SWITCH,
-            "action_label": LABEL[SWITCH], "reason": "冷场换题", "question": self.question_index,
-            "ts": round(time.time() - self.started_at, 3),
-        })
-        emit({"t": "done", "turn": turn_id, "question": self.question_index,
-              "state": self.state(), "finished": False})
 
     # -- 打断 --------------------------------------------------------
     def interrupt(self, ratio: float, spoken: str, heard: str) -> dict:
@@ -1212,7 +1206,8 @@ def load_config(path: Path | str | None = None) -> dict:
     cfg.setdefault("max_probe_per_question", 2)
     cfg.setdefault("max_clarify_per_question", 2)
     cfg.setdefault("max_switch_per_question", 2)
-    cfg.setdefault("silence_seconds", 8)
+    cfg.setdefault("silence_seconds", 5)
+    cfg.setdefault("silence_close_seconds", 8)
     cfg.setdefault("turn", {})
     for k, v in (("empty_chars", 4), ("short_chars", 22), ("max_sentence_chars", 60),
                  ("soft_sentence_chars", 22), ("history_limit", 30)):

@@ -108,7 +108,8 @@ class Handler(BaseHTTPRequestHandler):
                 "mock": mock,
                 "questions": CONFIG.get("max_questions"),
                 "roles": CONFIG.get("roles"),
-                "silence_seconds": CONFIG.get("silence_seconds", 15),
+                "silence_seconds": CONFIG.get("silence_seconds", 5),
+                "silence_close_seconds": CONFIG.get("silence_close_seconds", 8),
             })
             return
 
