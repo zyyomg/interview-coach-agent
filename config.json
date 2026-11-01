@@ -1,7 +1,7 @@
 {
   "model": "deepseek-flash",
   "api_base": "https://api.deepseek.com",
-  "_model_note": "若该账号返回 model 不存在，把 model 改成 deepseek-chat（同价目档位），其余不用动",
+  "_model_note": "官方模型名是 deepseek-flash 或 deepseek-v4-pro；换 Key 后先跑 python tools.py check 验证",
 
   "max_questions": 8,
   "max_probe_per_question": 2,
@@ -19,11 +19,11 @@
   },
 
   "price": {
-    "input_miss": 2.16,
-    "input_hit": 0.043,
-    "output": 8.64,
-    "usd_cny": 7.2,
-    "peak_note": "deepseek-flash peak：$0.30/$1.20 每百万 token，按 7.2 汇率折人民币"
+    "input_miss": 2.0,
+    "input_hit": 0.04,
+    "output": 8.0,
+    "offpeak_factor": 0.5,
+    "peak_note": "deepseek-flash 官方人民币价（2026-11 核对）：输入未命中 ¥2 / 缓存命中 ¥0.04 / 输出 ¥8 每百万 token；空闲时段（工作日晚、午休、周末）半价"
   },
 
   "roles": {

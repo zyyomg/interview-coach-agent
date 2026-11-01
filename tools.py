@@ -137,13 +137,14 @@ def cmd_check(args) -> int:
     total_ms = (time.time() - t0) * 1000
     cost = A.cost_cny(usage, cfg.get("price", {}))
     est = "（估算）" if usage.get("estimated") else ""
+    window = "高峰" if A.is_peak() else "空闲·半价"
 
     print(f"        返回「{text[:40]}」")
     print("")
     print(f"  首字     {first_ms:.0f} ms" if first_ms is not None else "  首字     —")
     print(f"  整轮     {total_ms:.0f} ms")
     print(f"  用量     输入 {int(usage.get('miss', 0)) + int(usage.get('hit', 0))} / "
-          f"输出 {int(usage.get('out', 0))} token，本轮 ¥{cost:.4f}{est}")
+          f"输出 {int(usage.get('out', 0))} token，本轮 ¥{cost:.4f}（{window}）{est}")
     print("")
     print("  OK 真实模式可用。下一步：python server.py")
     print("")

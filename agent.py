@@ -131,12 +131,31 @@ def est_tokens(text: str) -> int:
     return max(1, int(round(cjk / 1.5 + other / 4)))
 
 
-def cost_cny(usage: dict, price: dict) -> float:
-    """按命中/未命中分别计价（策划书 7.1）。单位：元。"""
-    return (
-        usage.get("hit", 0) * float(price.get("input_hit", 0.043))
-        + usage.get("miss", 0) * float(price.get("input_miss", 2.16))
-        + usage.get("out", 0) * float(price.get("output", 8.64))
+def is_peak(ts: float | None = None) -> bool:
+    """现在是不是高峰时段。
+
+    DeepSeek 的高峰是北京时间工作日 9:00-12:00、14:00-18:00，其余（含午休、
+    晚上、周末）半价。节假日按工作日算——这里没有中国的节假日日历，
+    所以节假日那几天会**略微高估**成本，宁可多报不少报。
+    """
+    t = time.localtime(ts if ts is not None else time.time())
+    if t.tm_wday >= 5:                     # 5=周六 6=周日
+        return False
+    return 9 <= t.tm_hour < 12 or 14 <= t.tm_hour < 18
+
+
+def cost_cny(usage: dict, price: dict, peak: bool | None = None) -> float:
+    """按命中/未命中分别计价（策划书 7.1）。单位：元。
+
+    peak=None 时按当前时间判断；空闲时段乘 `offpeak_factor`（默认 0.5）。
+    """
+    if peak is None:
+        peak = is_peak()
+    factor = 1.0 if peak else float(price.get("offpeak_factor", 0.5))
+    return factor * (
+        usage.get("hit", 0) * float(price.get("input_hit", 0.04))
+        + usage.get("miss", 0) * float(price.get("input_miss", 2.0))
+        + usage.get("out", 0) * float(price.get("output", 8.0))
     ) / 1_000_000
 
 
@@ -1212,6 +1231,6 @@ def load_config(path: Path | str | None = None) -> dict:
     for k, v in (("empty_chars", 4), ("short_chars", 22), ("max_sentence_chars", 60),
                  ("soft_sentence_chars", 22), ("history_limit", 30)):
         cfg["turn"].setdefault(k, v)
-    cfg.setdefault("price", {"input_miss": 2.16, "input_hit": 0.043, "output": 8.64, "usd_cny": 7.2})
+    cfg.setdefault("price", {"input_miss": 2.0, "input_hit": 0.04, "output": 8.0, "offpeak_factor": 0.5})
     cfg.setdefault("roles", {"ai_pm": "AI 产品经理（实习）", "pm": "产品经理", "general": "通用岗位"})
     return cfg
