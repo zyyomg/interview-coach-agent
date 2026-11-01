@@ -12,8 +12,8 @@
 
   "thinking": {
     "turn": "disabled",
-    "report": "enabled",
-    "_note": "DeepSeek 思考模式默认是开的（effort=high）。对话必须关：否则思维链先占住 token，首音要等它想完；思维链还按输出 token 计费。复盘那一路开着，一次而已"
+    "report": "disabled",
+    "_note": "DeepSeek 思考模式默认是开的（effort=high）：对话开着会让首音等它想完；复盘开着会把 max_tokens 吃掉、JSON 被截断（实测 1032 字就断了，于是回退模板、没有参考答法）。两边都关。真想开就改这里，但记得同时把复盘的 max_tokens 调大"
   },
 
   "level": "normal",
@@ -44,7 +44,8 @@
     "short_chars": 22,
     "max_sentence_chars": 60,
     "soft_sentence_chars": 22,
-    "history_limit": 30
+    "history_limit": 30,
+    "silence_seconds": 4.5
   },
 
   "price": {

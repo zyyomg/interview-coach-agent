@@ -969,6 +969,11 @@ class InterviewAgent:
         gen = self._llm_report(m) if self.llm.mode == "live" else None
         if not gen:
             gen = self._template_report(m)
+            if self.llm.mode == "live":
+                # 真实模式却没拿到模型复盘：多半是 JSON 被 max_tokens 截断。
+                # 必须显式告诉用户，否则他会以为"模型就是给不出参考答法"（实测踩过）
+                gen["note"] = ("这次的复盘没拿到完整的模型返回（通常是输出被截断），"
+                               "已用模板兜底——所以没有参考答法。下一场会重试。")
         gen["metrics"] = m
         gen["transcript"] = [
             {"role": t["role"], "text": t["text"], "action": t.get("action_label", "")}
@@ -1004,13 +1009,18 @@ class InterviewAgent:
             ' "strengths": ["优势1", "优势2", "优势3"],'
             ' "improvements": [{"issue": "问题", "fix": "具体改法"}],'
             ' "per_round": [{"q": "问题简述（15 字内）", "comment": "一句话点评他答得怎么样",'
-            ' "sample": "这道题的参考答法，80-120 字"}]}\n'
+            ' "approach": "答题思路：从哪个方向切入、按什么顺序讲（30-60 字）",'
+            ' "data": "这道题该准备哪些数据（一句话，点名要报的数字或事实）",'
+            ' "sample": "参考答法，80-120 字"}]}\n'
             "要求：\n"
             "1. 优势和改进各 3 条，必须引用候选人原话里的具体词；改进项要给可执行动作，"
             "不要写「多练习」这种空话。\n"
-            "2. per_round 要覆盖每一个话题，sample 是**给用户学的那种答法**：用候选人第一人称，"
-            "2-3 句，必须带一个具体数字、一个真实做法或一个具体例子（比如「把 A 的评测集从 20 条扩到 200 条，"
-            "bad case 从 31% 降到 12%」），不要写「要有数据支撑」这种空话。\n"
+            "2. per_round 要覆盖每一个话题，三个字段各有分工：\n"
+            "   · approach = 怎么想：先说什么、再说什么，这类题该从哪个角度切入；\n"
+            "   · data = 该备哪些数：具体到「评测集条数、卡点条数、bad case 前后比例」这种；\n"
+            "   · sample = 怎么开口：候选人第一人称，2-3 句，必须带一个具体数字或一个真实例子"
+            "（比如「把 A 的评测集从 20 条扩到 200 条，bad case 从 31% 降到 12%」），"
+            "不要写「要有数据支撑」这种空话。\n"
             "3. sample 写的是**更好的答法**，不是重复候选人说过的话。"
         )
         try:
@@ -1018,7 +1028,7 @@ class InterviewAgent:
             for ev in self.llm.stream(
                 [{"role": "system", "content": "你是资深面试官，说话直接、具体、不客套。"},
                  {"role": "user", "content": prompt}],
-                temperature=0.3, max_tokens=1800, purpose="report",
+                temperature=0.3, max_tokens=1400, purpose="report",
             ):
                 if ev["type"] == "token":
                     buf.append(ev["text"])
@@ -1143,7 +1153,8 @@ class InterviewAgent:
             "per_round": [
                 # 演示模式没有模型，给不出参考答法——这里留空，前端会说明原因，
                 # 不假装自己懂内容（模板复盘只谈指标）
-                {"q": f"第 {t['question']} 个话题", "comment": t["reason"], "sample": ""}
+                {"q": f"第 {t['question']} 个话题", "comment": t["reason"],
+                 "approach": "", "data": "", "sample": ""}
                 for t in self.turns if t["role"] == "user" and t["action"] != CLARIFY
             ][:8],
             "generated_by": "template",
@@ -1245,10 +1256,14 @@ def render_markdown(report: dict) -> str:
         lines.append(f"### {row.get('q', '')}")
         if row.get("comment"):
             lines.append(f"- 点评：{row.get('comment')}")
+        if row.get("approach"):
+            lines.append(f"- **答题思路**：{row.get('approach')}")
+        if row.get("data"):
+            lines.append(f"- **该备的数据**：{row.get('data')}")
         if row.get("sample"):
             lines.append(f"- **参考答法**：{row.get('sample')}")
         elif report.get("mode") == "mock" or report.get("generated_by") == "template":
-            lines.append("- 参考答法：演示模式不生成（没有模型可问）")
+            lines.append("- 参考答法：这一场没有（演示模式，或模型返回不完整）")
         lines.append("")
 
     lines += [

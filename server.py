@@ -111,6 +111,7 @@ class Handler(BaseHTTPRequestHandler):
                 "roles": CONFIG.get("roles"),
                 "silence_seconds": CONFIG.get("silence_seconds", 5),
                 "silence_close_seconds": CONFIG.get("silence_close_seconds", 5),
+                "turn_silence_seconds": (CONFIG.get("turn") or {}).get("silence_seconds", 4.5),
             })
             return
 

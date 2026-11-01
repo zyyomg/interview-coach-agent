@@ -55,7 +55,7 @@
     tDone: 0,
     reportedAudio: false,
     timer: { silence: 0, barge: 0, silenceNudge: 0 },
-    silenceMs: 3000,     // 说完了停多久算说完。2 秒太急——话说一半想词儿就被当成说完了
+    silenceMs: 4500,     // 说完了停多久算说完。3 秒实测还是太急，用户停一下就被打断；跟 config 走
     nudgeMs: 5000,       // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
     closeMs: 5000,       // 催过之后还没动静，多久把这一场收掉（服务端可覆盖）→ 累计 10 秒
     nudges: 0,           // 已经催过几次；用户一开口就清零
@@ -676,6 +676,9 @@
     if (!S.session) return '没有会话';
     if (S.finished) return '这一场已结束';
     if (S.paused) return '已暂停';
+    // 打字模式（识别不可用 / 手动关了语音）不催场、不收场：
+    // 用户手上有键盘，5 秒催一句、10 秒结束太粗暴（实测把人从打字里直接踢下线）
+    if (S.asrDown || !S.voice) return '在打字模式，不催场';
     if (S.busy) return '正在生成，等它说完';
     if (S.speaking) return '播报没结束（一直这样的话是 TTS 没回调）';
     if ((S.finalText || '').trim() || (S.interimText || '').trim()) return '识别缓冲里还有话';
@@ -1055,6 +1058,14 @@
     if (!n) { wrap.hidden = true; return; }
     wrap.hidden = false;
 
+    if (r.note) {
+      // 模型这次没给出完整复盘时，必须说清楚，别让人以为"模型就是给不出参考答法"
+      const warn = document.createElement('div');
+      warn.className = 'sample-note';
+      warn.textContent = r.note;
+      box.appendChild(warn);
+    }
+
     for (let i = 0; i < n; i++) {
       const round = rounds[i] || {};
       const pair = pairs[i] || {};
@@ -1099,11 +1110,21 @@
       if (sample) {
         const lab2 = document.createElement('span');
         lab2.className = 'lab2';
-        lab2.textContent = '可以这样答（范本，不要求背）';
+        lab2.textContent = '答题思路（从哪切入、怎么组织）';
         body.appendChild(lab2);
-        const s = document.createElement('div');
-        s.textContent = sample;
-        body.appendChild(s);
+        body.appendChild(Object.assign(document.createElement('div'), { textContent: round.approach || '（这次没给）' }));
+
+        const lab3 = document.createElement('span');
+        lab3.className = 'lab2';
+        lab3.textContent = '该备的数据（面试前先填好这几个数）';
+        body.appendChild(lab3);
+        body.appendChild(Object.assign(document.createElement('div'), { textContent: round.data || '（这次没给）' }));
+
+        const lab4 = document.createElement('span');
+        lab4.className = 'lab2';
+        lab4.textContent = '可以这样开口（范本，不要求背）';
+        body.appendChild(lab4);
+        body.appendChild(Object.assign(document.createElement('div'), { textContent: sample }));
       } else if (r.mode === 'mock' || r.generated_by === 'template') {
         const note = document.createElement('div');
         note.className = 'mine';
@@ -1219,6 +1240,11 @@
 
   micBtn.addEventListener('click', () => {
     if (S.paused) return;
+    if (S.asrDown) {
+      // 识别已经判死：点了也不会有反应，必须说清楚，否则用户以为按钮坏了
+      tip('<b>识别服务现在连不上</b>　点麦克风也没用，先打字；换成 Edge 打开通常就好了。');
+      return;
+    }
     if (S.speaking) { interruptNow(''); return; }   // 它在说：照旧打断，但不算一次"插话"
     if (S.listening) { stopRec(); setStatus('麦克风关了 · 可以打字', ''); refreshStatus(); return; }
     if (S.finalText.trim()) { commitSpeech(); return; }
@@ -1434,10 +1460,11 @@
     .then((r) => r.json())
     .then((h) => {
       S.mock = !!h.mock;
-      // 注意别写错字段：silenceMs 是"说完判定"（3 秒），nudgeMs 是"冷场催场"。
-      // 这里曾经错写成 S.silenceMs，结果每句话都要等 10 秒才提交，看起来像"没发出去"。
+      // 三个时间别弄混：silenceMs = "说完"判定；nudgeMs = 冷场催一句；closeMs = 催过之后再等多久收场。
+      // 这里曾经把 silence_seconds 写进 S.silenceMs，结果每句话都要等 10 秒才提交，看起来像"没发出去"。
       if (h.silence_seconds) S.nudgeMs = h.silence_seconds * 1000;
       if (h.silence_close_seconds) S.closeMs = h.silence_close_seconds * 1000;
+      if (h.turn_silence_seconds) S.silenceMs = h.turn_silence_seconds * 1000;
       const dot = $('modeDot');
       dot.classList.add(S.mock ? 'mock' : 'live');
       $('modeText').textContent = S.mock
