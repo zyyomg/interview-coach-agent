@@ -795,7 +795,7 @@
           if (S.voice) startRec();
           tip(S.mock
             ? '演示模式：没有检测到模型 Key，面试官由本地脚本扮演。配好 <b>DEEPSEEK_API_KEY</b> 后重启即可换成真模型。'
-            : `真实模型 · ${S.rounds} 个话题 · 一场约 ¥0.05`);
+            : `真实模型 · ${S.rounds} 个话题 · 一场约 ¥0.03`);
         } else {
           handleEvent(ev);
         }
@@ -1137,7 +1137,7 @@
       <div class="empty-mark">对练</div>
       <h2>选个岗位，直接开口。</h2>
       <p>面试官一次只问一个问题：你答得含糊它追问，答得漂亮它换题，你随时可以打断它。结束后给你一份复盘和一组数据。</p>
-      <div class="empty-tips"><span>8 个话题约 10 分钟</span><span>一场约 ¥0.05</span><span>不需要注册</span></div>`;
+      <div class="empty-tips"><span>8 个话题约 10 分钟</span><span>一场约 ¥0.03</span><span>不需要注册</span></div>`;
     chat.appendChild(box);
     S.session = null;
     S.finished = false;
