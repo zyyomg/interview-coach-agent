@@ -54,7 +54,8 @@
     tFirstAudio: 0,
     tDone: 0,
     reportedAudio: false,
-    timer: { silence: 0, barge: 0, silenceNudge: 0, asrProbe: 0 },
+    timer: { silence: 0, barge: 0, silenceNudge: 0, asrProbe: 0, asrRetry: 0 },
+    asrFails: 0,        // 识别连续断线次数，成功出字就清零；重连带指数退避
     silenceMs: 4500,     // 说完了停多久算说完。3 秒实测还是太急，用户停一下就被打断；跟 config 走
     nudgeMs: 5000,       // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
     closeMs: 5000,       // 催过之后还没动静，多久把这一场收掉（服务端可覆盖）→ 累计 10 秒
@@ -507,6 +508,7 @@
       S.lastVoiceAt = performance.now();
       S.asrRestarts = 0;                  // 出字了就说明引擎活着，重连计数清零
       S.asrDown = false;
+      S.asrFails = 0;                     // 也把"断线次数"清零，下次断了重新从 4 秒开始
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
@@ -545,11 +547,11 @@
       } else if (e.error === 'no-speech') {
         setStatus('没听到声音', '');
       } else if (e.error === 'network') {
-        degrade(IS_EDGE
-          ? '识别服务连不上（网络或代理的问题，Edge 也一样会断）。已切到打字模式——'
-            + '点左侧「语音」开关可以再试一次。'
-          : '这个浏览器的识别服务连不上（Chrome 走境外服务时常见）。已切到打字模式——'
-            + '换成 Edge 打开通常就好了。');
+        // 在线识别断线是常态，不是"坏了"：不要直接降级成打字并永久放弃，
+        // 而是保留语音、后台按退避自动重连（实测用户每次都得手动点开关，点得很烦）
+        S.asrDown = true;
+        paintMic();
+        scheduleAsrRetry('网络');
       } else if (e.error === 'audio-capture') {
         degrade('找不到麦克风设备（可能是被别的软件占用了）。已切到打字模式。');
       }
@@ -612,10 +614,26 @@
       }
       S.asrDown = true;
       paintMic();
-      tip(`<b>还是连不上</b>　${IS_EDGE
-        ? '多半是网络或代理，或者系统里关掉了「在线语音识别」。'
-        : '换 Edge 试试。'}先打字，过一会儿再点「语音」开关重试。`);
+      scheduleAsrRetry('连不上');
     }, 2500);
+  }
+
+  /**
+   * 识别断线后的自动重连：指数退避 4s → 7s → 12s → 20s → 30s 封顶。
+   *
+   * Web Speech 是在线识别，隔一阵就断一次，属于常态。让它自动接回来，
+   * 用户不用每次自己去点开关；断的这段时间照样可以打字，不耽误回答。
+   */
+  function scheduleAsrRetry(reason) {
+    if (!S.session || S.finished || !S.voice || S.paused) return;
+    S.asrFails = (S.asrFails || 0) + 1;
+    const wait = Math.min(30, Math.round(4 * Math.pow(1.7, S.asrFails - 1)));
+    setStatus(`识别断了（${reason}），${wait} 秒后自动重连…`, '');
+    tip(`<b>识别断线</b>　${wait} 秒后自动重连（第 ${S.asrFails} 次）；这期间可以直接打字，这场不会因此结束。`);
+    clearTimeout(S.timer.asrRetry);
+    S.timer.asrRetry = setTimeout(() => {
+      if (S.session && !S.finished && S.voice && !S.paused) retryAsr();
+    }, wait * 1000);
   }
 
   /**
@@ -1297,7 +1315,12 @@
     sw.classList.toggle('on', S.voice);
     $('voiceHint').textContent = S.voice ? '它会念，你说完自动接话' : '只打字，不播音';
 
-    if (!S.voice) return;
+    if (!S.voice) {
+      // 手动关语音：把排队的自动重连也停掉，别在后台偷偷开麦
+      clearTimeout(S.timer.asrRetry);
+      clearTimeout(S.timer.asrProbe);
+      return;
+    }
 
     // 重新打开语音 = 一次真正的重连：换新识别器、解除暂停、给结果反馈。
     // 原来只把 asrDown 清成 false，既没换对象也没提示，用户只会觉得"开关点了没用"。

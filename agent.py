@@ -1023,31 +1023,43 @@ class InterviewAgent:
             "要求：\n"
             "1. 优势和改进各 3 条，必须引用候选人原话里的具体词；改进项要给可执行动作，"
             "不要写「多练习」这种空话。\n"
-            "2. per_round 要覆盖每一个话题，三个字段各有分工：\n"
-            "   · approach = 怎么想：先说什么、再说什么，这类题该从哪个角度切入；\n"
-            "   · data = 该备哪些数：具体到「评测集条数、卡点条数、bad case 前后比例」这种；\n"
-            "   · sample = 怎么开口：候选人第一人称，2-3 句，必须带一个具体数字或一个真实例子"
-            "（比如「把 A 的评测集从 20 条扩到 200 条，bad case 从 31% 降到 12%」），"
+            "2. per_round 最多 7 条，优先选被追问过的、答得最差的几题（不用每题都写）。\n"
+            "3. 三个字段各有分工，都写短一点：\n"
+            "   · approach = 怎么想（≤40 字）：先说什么、再说什么，这类题该从哪个角度切入；\n"
+            "   · data = 该备哪些数（≤25 字）：具体到「评测集条数、卡点条数、bad case 前后比例」这种；\n"
+            "   · sample = 怎么开口（60-90 字）：候选人第一人称，2-3 句，必须带一个具体数字或真实例子"
+            "（比如「把评测集从 20 条扩到 200 条，bad case 从 31% 降到 12%」），"
             "不要写「要有数据支撑」这种空话。\n"
-            "3. sample 写的是**更好的答法**，不是重复候选人说过的话。"
+            "4. sample 写的是**更好的答法**，不是重复候选人说过的话。"
         )
-        try:
-            buf = []
-            for ev in self.llm.stream(
-                [{"role": "system", "content": "你是资深面试官，说话直接、具体、不客套。"},
-                 {"role": "user", "content": prompt}],
-                temperature=0.3, max_tokens=1400, purpose="report",
-            ):
-                if ev["type"] == "token":
-                    buf.append(ev["text"])
-                elif ev["type"] == "usage":
-                    self.usage["hit"] += int(ev.get("hit", 0))
-                    self.usage["miss"] += int(ev.get("miss", 0))
-                    self.usage["out"] += int(ev.get("out", 0))
-            return self._parse_json("".join(buf))
-        except Exception as e:
-            self.llm.last_error = str(e)
-            return None
+        # 输出量估计要准：每条 per_round 三段话 ≈ 300–400 token，
+        # 7 条就 2000 多。之前给 1400，JSON 必然在中间被切断（实测 2478 字处断）。
+        for max_tok, extra in (
+            (2800, ""),
+            (3200, "\n\n这次一定要输出**完整合法**的 JSON：sample 压到 60 字内，per_round 最多 5 条。"),
+        ):
+            try:
+                buf = []
+                for ev in self.llm.stream(
+                    [{"role": "system", "content": "你是资深面试官，说话直接、具体、不客套。"},
+                     {"role": "user", "content": prompt + extra}],
+                    temperature=0.3, max_tokens=max_tok, purpose="report",
+                ):
+                    if ev["type"] == "token":
+                        buf.append(ev["text"])
+                    elif ev["type"] == "usage":
+                        self.usage["hit"] += int(ev.get("hit", 0))
+                        self.usage["miss"] += int(ev.get("miss", 0))
+                        self.usage["out"] += int(ev.get("out", 0))
+                text = "".join(buf)
+                gen = self._parse_json(text)
+                if gen:
+                    return gen
+                # 记下失败原因，方便排查是截断还是格式问题
+                self.llm.last_error = f"复盘 JSON 不完整（{len(text)} 字，末尾：{text[-24:]!r}）"
+            except Exception as e:
+                self.llm.last_error = str(e)
+        return None
 
     @staticmethod
     def _parse_json(text: str):

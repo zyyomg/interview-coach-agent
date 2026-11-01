@@ -312,6 +312,20 @@ const check = (ok, msg) => {
   check(sr.instances.length === beforeInstances + 1 && sr.started,
     `…并且换了新的识别器、真的开麦了（新实例 ${sr.instances.length - beforeInstances} 个）`);
 
+  // ⑪ 识别断线（network）后要自己重连，不能等用户去点开关
+  S.asrDown = false;
+  S.paused = false;
+  S.voice = true;
+  S.asrFails = 0;
+  const liveRec = sr.instances[sr.instances.length - 1];
+  const beforeAuto = sr.instances.length;
+  liveRec.onerror({ error: 'network' });          // 模拟在线识别断线
+  await flush();
+  check(S.asrDown === true, '断线后先标记识别不可用');
+  advance(5000);                                   // 第一次退避 4 秒
+  await flush();
+  check(sr.instances.length > beforeAuto, `断线 4 秒后自动重连（新识别器 ${sr.instances.length - beforeAuto} 个）`);
+
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);
 })();
