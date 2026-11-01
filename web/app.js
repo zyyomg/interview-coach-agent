@@ -654,7 +654,9 @@
         break;
       }
       case 'err': {
-        tip(`<b>模型报错：${ev.msg}</b>　已用兜底话术接住，会话没断。`);
+        // hint 是后端按报错类型给的「照这个做」，比原始报错有用得多，所以放前排
+        const hint = ev.hint ? `<br><b>→ ${ev.hint}</b>` : '';
+        tip(`<b>模型报错：${ev.msg}</b>${hint}<br>已用兜底话术接住，会话没断。`);
         break;
       }
       case 'done': {

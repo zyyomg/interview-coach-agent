@@ -51,6 +51,18 @@ CLARIFY_LINES = (
     "没接到，麻烦重新说一下？",
 )
 
+# 出异常时代模型说的一句。按原因分开，是因为「Key 失效」和「网络抖一下」
+# 对用户是两件事：前者要他停下去改配置，后者他继续说就好。
+FALLBACK_LINES = {
+    "auth": "我这边接口没通，先停一下。",
+    "balance": "我这边接口欠费了，先停一下。",
+    "model": "我这边模型配错了，先停一下。",
+    "rate": "我这边太急了，稍等再问。",
+    "timeout": "我这边卡了一下，你继续说。",
+    "network": "我这边断了一下，你继续说。",
+    "unknown": "我这边卡了一下，你继续说。",
+}
+
 
 def normalize(text: str) -> str:
     """去掉标点与空白，只留内容——判定按"实字数"算，不按字符数。"""
@@ -134,6 +146,35 @@ def pct(values: list, p: float):
     vals = sorted(vals)
     k = int(round((len(vals) - 1) * p))
     return vals[max(0, min(len(vals) - 1, k))]
+
+
+def classify_error(msg: str) -> dict:
+    """把接口报错归成几类，每类配一句"照着做就行"的提示。
+
+    真实模式下的失败原因，代码能认几类就认几类。之前所有异常都只说
+    「我这边卡了一下」——Key 失效和麦克风坏了长得一模一样，排查只能靠猜。
+
+    先扒 "HTTP 4xx" 的状态码再判断，不能直接在整个串里搜 "401"：
+    DeepSeek 的报错里带 request_id（uuid），里有几个数字，会误判成别的类型。
+    """
+    s = str(msg or "")
+    low = s.lower()
+    m = re.search(r"HTTP\s+(\d{3})", s)
+    code = int(m.group(1)) if m else 0
+
+    if code == 401 or "invalid_api_key" in low or "unauthorized" in low or "authentication" in low:
+        return {"kind": "auth", "hint": "Key 无效或已过期：检查 .env 里的 DEEPSEEK_API_KEY，改完要重启服务"}
+    if code == 402 or "insufficient" in low or "balance" in low:
+        return {"kind": "balance", "hint": "账户余额不足：去 DeepSeek 控制台充值后重试"}
+    if code == 404 or "model_not_found" in low or "does not exist" in low:
+        return {"kind": "model", "hint": "模型名不存在：把 config.json 的 model 改成 deepseek-chat"}
+    if code == 429 or "rate limit" in low:
+        return {"kind": "rate", "hint": "被限流了：等 10 秒再答一轮，别连续猛说"}
+    if "timeout" in low or "timed out" in low:
+        return {"kind": "timeout", "hint": "请求超时：到 api.deepseek.com 的链路不通，试试关掉代理"}
+    if "getaddrinfo" in low or "name or service" in low or "connection" in low or "urlopen" in low:
+        return {"kind": "network", "hint": "连不上 api.deepseek.com：检查网络或代理设置"}
+    return {"kind": "unknown", "hint": "看服务窗口里的原始报错；也可以跑 python tools.py check 复现"}
 
 
 # ---------------------------------------------------------------- 分句
@@ -512,8 +553,12 @@ class InterviewAgent:
                     usage = ev
         except Exception as e:                                   # 兜底：会话不中断
             self.llm.last_error = str(e)
-            emit({"t": "err", "msg": str(e)[:200]})
-            fallback = "我这边卡了一下，你继续说。"
+            info = classify_error(str(e))
+            emit({"t": "err", "msg": str(e)[:200], "kind": info["kind"], "hint": info["hint"]})
+            fallback = FALLBACK_LINES.get(info["kind"], FALLBACK_LINES["unknown"])
+            # 气泡是靠 tok 拼出来的，只发 sent 就只剩一个空框（和 CLARIFY 那个 bug 同一类）。
+            # 已经收到半截字也要补上，否则字幕和实际播出来的话对不上。
+            emit({"t": "tok", "d": fallback})
             emit({"t": "sent", "d": fallback})
             return fallback
 
@@ -523,7 +568,8 @@ class InterviewAgent:
 
         text = "".join(chunks).strip()
         if not text:                                             # 空回复也兜底
-            text = "我这边卡了一下，你继续说。"
+            text = FALLBACK_LINES["unknown"]
+            emit({"t": "tok", "d": text})                        # 同理：没有 tok 就只有声音没有字幕
             emit({"t": "sent", "d": text})
 
         if usage:

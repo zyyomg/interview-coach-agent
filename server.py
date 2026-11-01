@@ -22,6 +22,7 @@ import argparse
 import json
 import mimetypes
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -285,6 +286,19 @@ def _has_key() -> bool:
     return bool((os.environ.get("DEEPSEEK_API_KEY") or CONFIG.get("api_key") or "").strip())
 
 
+def _port_busy(port: int) -> bool:
+    """端口上有没有人在听。
+
+    只靠 bind 成功与否判断不够：Windows 上 HTTP 服务默认带 SO_REUSEADDR，
+    两个进程能绑同一个端口，新进程绑得上，连接却可能被旧进程接走——
+    这比直接报错更难查（实测两个 PID 同时 LISTENING 同一个端口）。
+    所以先连一下：连得通就说明有人，跳过去。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.25)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
 def _find_edge() -> str | None:
     """找 Edge 的可执行文件。语音识别只在这条路上稳。"""
     if not sys.platform.startswith("win"):
@@ -411,12 +425,17 @@ def main():
     mode = "演示模式（本地脚本扮演面试官）" if (args.mock or not _has_key()) else f"真实模型 · {CONFIG.get('model')}"
     port = args.port
     httpd = None
+    skipped = []
     for candidate in range(port, port + 12):
+        if _port_busy(candidate):          # 有人先听着，别硬绑上去
+            skipped.append(candidate)
+            continue
         try:
             httpd = ThreadingHTTPServer(("127.0.0.1", candidate), Handler)
             port = candidate
             break
         except OSError:
+            skipped.append(candidate)
             continue
     if httpd is None:
         log("端口都被占用了，换一个吧：python server.py --port 8123")
@@ -426,6 +445,12 @@ def main():
     log("")
     log("  面试陪练 Agent v0.1")
     log(f"  {url}")
+    if skipped:
+        # 以前这里会静默地"换个端口"，甚至（Windows 上）两个进程绑同一个端口、
+        # 请求随机落到旧进程。那个坑排查了两小时，所以必须把话说清楚。
+        log(f"  [!] 端口 {', '.join(map(str, skipped))} 上已经有服务在跑，改起在 {port}"
+            f"（本进程 PID {os.getpid()}）")
+        log("      同一端口上跑两个服务 = 请求随机落到旧进程，先关掉旧的再重启")
     log(f"  模式：{mode}")
     price = CONFIG.get("price", {})
     log(f"  配置：{CONFIG.get('max_questions')} 个话题 / 每题最多追问 "

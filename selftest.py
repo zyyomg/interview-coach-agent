@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 """selftest.py —— 链路自测（不花钱、不联网）
 
-    python selftest.py              # 规则单测 + 10 场模拟会话 + HTTP 端到端
+    python selftest.py              # 规则单测 + 10 场模拟 + HTTP 端到端 + 接口契约 + 兜底
     python selftest.py --sessions 3 # 少跑几场
 
-三件事：
+五件事：
 1. 判定规则单测：四种动作各自该在什么输入上触发
 2. 模拟 10 场：脚本候选人跑完整流程，看状态机有没有走飞
 3. HTTP 冒烟：起真服务，用 ndjson 流跑一遍，确认前后端契约对得上
+4. 模型接口契约：本地桩模拟 DeepSeek 的 SSE，验流式解析与计价
+5. 兜底路径：接口报错 / 模型返回空时，气泡不能是空的（这个 bug 复发过三次）
 
 注意：这里用的是演示模型（本地脚本），**不是**真实评测。
 延迟和成本是链路证据，不是产品指标；真实数据要接上 Key 自己跑（见 README）。
@@ -157,10 +159,18 @@ def run_session(cfg, role: str, rounds: int, persona: str, seed: int) -> dict:
 
 
 def run_http(cfg) -> dict:
-    """真起一个服务，用 ndjson 流跑一场，验证契约。"""
+    """真起一个服务，用 ndjson 流跑一场，验证契约。
+
+    落盘目录改到系统临时目录再跑：自测产生的假会话不能进 runs/，
+    否则「往期复盘」和 M6 的汇总表里会混进一条没人练过的记录。
+    """
+    import shutil
+    import tempfile
     import server as SRV
     from http.server import ThreadingHTTPServer
 
+    tmp_runs = Path(tempfile.mkdtemp(prefix="icoach-selftest-"))
+    SRV.RUNS = tmp_runs
     SRV.STATE["mock"] = True
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), SRV.Handler)
     port = httpd.server_address[1]
@@ -221,6 +231,7 @@ def run_http(cfg) -> dict:
     finally:
         httpd.shutdown()
         httpd.server_close()
+        shutil.rmtree(tmp_runs, ignore_errors=True)
     return result
 
 
@@ -298,7 +309,67 @@ def run_live_stub(cfg) -> dict:
     return out
 
 
-def render(rules, sessions, http, live, cfg) -> str:
+def _boom_llm(msg: str, partial: str = None):
+    """假的模型客户端：先吐几个字（可选）再抛错。"""
+    class Boom:
+        mode = "live"
+        last_error = ""
+
+        def stream(self, messages, **kw):
+            for ch in (partial or ""):
+                yield {"type": "token", "text": ch}
+            raise RuntimeError(msg)
+
+    return Boom()
+
+
+def _empty_llm():
+    """假的模型客户端：一个 token 都不给。"""
+    class Empty:
+        mode = "live"
+        last_error = ""
+
+        def stream(self, messages, **kw):
+            return iter(())
+
+    return Empty()
+
+
+def run_fallbacks(cfg) -> dict:
+    """三条兜底路径都必须「有字幕 + 有播报」。
+
+    空气泡这个 bug 已经复发过三次：澄清分支只发 sent、报错兜底只发 sent、
+    空回复兜底也只发 sent。统一成一句自查：**tok 不能缺**。
+    """
+    cases = [
+        ("Key 失效 / 401", _boom_llm('HTTP 401: {"error":{"message":"Authentication Fails"}}'), "auth"),
+        ("欠费 / 402（已吐半句）", _boom_llm("HTTP 402: Insufficient Balance", "这个"), "balance"),
+        ("模型返回空", _empty_llm(), None),
+    ]
+    rows = []
+    for note, llm, want_kind in cases:
+        evs = []
+        ag = A.InterviewAgent(cfg, "fallbacktest", "ai_pm", 4, llm)
+        ag.begin(evs.append)
+        tok = "".join(e.get("d", "") for e in evs if e["t"] == "tok")
+        sent = [e.get("d", "") for e in evs if e["t"] == "sent"]
+        err = next((e for e in evs if e["t"] == "err"), None)
+        if want_kind is None:
+            kind_ok = err is None                      # 空回复不是错误，不该报错
+        else:
+            kind_ok = bool(err and err.get("kind") == want_kind and err.get("hint"))
+        rows.append({
+            "note": note,
+            "bubble": tok.strip(),
+            "spoken": " ".join(sent),
+            "kind": (err or {}).get("kind", "—"),
+            "hint": (err or {}).get("hint", "—"),
+            "ok": bool(tok.strip() and sent and kind_ok),
+        })
+    return {"rows": rows, "ok": all(r["ok"] for r in rows)}
+
+
+def render(rules, sessions, http, live, fb, cfg) -> str:
     passed_rules = sum(1 for r in rules if r["ok"])
     passed_sess = sum(1 for s in sessions if s["ok"])
     total_cost = sum(s["cost"] for s in sessions)
@@ -376,7 +447,24 @@ def render(rules, sessions, http, live, cfg) -> str:
         f"| 拼回的首句 | {live.get('text', '')} |",
         f"| 结果 | {'✅ 通过' if live.get('ok') else '❌ 失败 ' + live.get('error', '')} |",
         "",
-        "## 五、这次没证明的事",
+        "## 五、兜底路径（接口出错 / 模型返回空）",
+        "",
+        f"结果：**{sum(1 for r in fb['rows'] if r['ok'])} / {len(fb['rows'])} 通过**",
+        "",
+        "盯的是一件具体的事：出错时气泡不能是空的。字幕靠 `tok` 拼、声音靠 `sent` 排，",
+        "漏任何一个都会变成「有声音没字幕」或「一个空气泡」——这个 bug 在澄清、报错、空回复里各犯过一次。",
+        "",
+        "| 场景 | 气泡里显示的 | 报错类型 | 该改哪一项 | 结果 |",
+        "|---|---|---|---|---|",
+    ]
+    for r in fb["rows"]:
+        lines.append(
+            f"| {r['note']} | {r['bubble']} | `{r['kind']}` | {r['hint']} | {'✅' if r['ok'] else '❌'} |"
+        )
+
+    lines += [
+        "",
+        "## 六、这次没证明的事",
         "",
         "- 真实模型的回复质量（演示模型是脚本，看不出模型水平）",
         "- 真实延迟（首字 / 首音要靠浏览器实测，见界面 HUD）",
@@ -406,12 +494,12 @@ def main():
     cfg = A.load_config()
     EVAL.mkdir(exist_ok=True)
 
-    print("1/4 判定规则单测 …")
+    print("1/5 判定规则单测 …")
     rules = run_rules(cfg)
     for r in rules:
         print(f"   {'OK  ' if r['ok'] else 'FAIL'} {r['note']}: {A.LABEL.get(r['got'])} — {r['reason']}")
 
-    print(f"2/4 模拟 {args.sessions} 场会话 …")
+    print(f"2/5 模拟 {args.sessions} 场会话 …")
     sessions = []
     personas = list(PERSONAS)
     for i in range(args.sessions):
@@ -425,18 +513,23 @@ def main():
 
     http = {"ok": False, "error": "skipped"}
     if not args.no_http:
-        print("3/4 HTTP 端到端 …")
+        print("3/5 HTTP 端到端 …")
         http = run_http(cfg)
         print(f"   {'OK' if http['ok'] else 'FAIL'} 事件 {http.get('events')} 个，"
               f"复盘分数 {http.get('score')}，{http.get('error', '')}")
 
-    print("4/4 模型接口契约（本地桩）…")
+    print("4/5 模型接口契约（本地桩）…")
     live = run_live_stub(cfg)
     print(f"   {'OK' if live['ok'] else 'FAIL'} 模式 {live.get('mode')}，"
           f"缓存 {live.get('hit')}/{live.get('miss')}/{live.get('out')}，"
           f"¥{live.get('cost', 0):.4f}，{live.get('error', '')}")
 
-    md = render(rules, sessions, http, live, cfg)
+    print("5/5 兜底路径（接口出错 / 模型返回空）…")
+    fb = run_fallbacks(cfg)
+    for r in fb["rows"]:
+        print(f"   {'OK  ' if r['ok'] else 'FAIL'} {r['note']}：气泡「{r['bubble']}」kind={r['kind']}")
+
+    md = render(rules, sessions, http, live, fb, cfg)
     out = EVAL / f"自测-{time.strftime('%Y%m%d-%H%M')}.md"
     out.write_text(md, encoding="utf-8")
 
@@ -444,13 +537,15 @@ def main():
     ok_sess = all(s["ok"] for s in sessions)
     ok_http = http.get("ok") or args.no_http
     ok_live = live.get("ok")
+    ok_fb = fb["ok"]
     print()
     print(f"规则 {sum(1 for r in rules if r['ok'])}/{len(rules)}　"
           f"会话 {sum(1 for s in sessions if s['ok'])}/{len(sessions)}　"
           f"HTTP {'skipped' if args.no_http else ('OK' if http.get('ok') else 'FAIL')}　"
-          f"接口 {'OK' if ok_live else 'FAIL'}")
+          f"接口 {'OK' if ok_live else 'FAIL'}　"
+          f"兜底 {sum(1 for r in fb['rows'] if r['ok'])}/{len(fb['rows'])}")
     print(f"报告：{out}")
-    return 0 if (ok_rules and ok_sess and ok_http and ok_live) else 1
+    return 0 if (ok_rules and ok_sess and ok_http and ok_live and ok_fb) else 1
 
 
 if __name__ == "__main__":
