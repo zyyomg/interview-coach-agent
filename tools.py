@@ -187,6 +187,7 @@ def _collect() -> list:
             "interrupts": itr.get("count", 0),
             "cost": m.get("cost_cny") or 0,
             "score": score,
+            "estimated": bool((m.get("usage") or {}).get("estimated")),
             "timings": d.get("timings") or {},
         })
     return rows
@@ -259,16 +260,18 @@ def cmd_summary(args) -> int:
         out += ["## 真实模式（M6 评测口径）", ""]
         if live:
             out += _table(live)
-            out += [
-                "",
-                f"> 延迟是全部样本合并后的 P50（{sum(len(r['timings']) for r in live)} 轮计时）。"
-                "成本按接口返回的 usage 计，不是估算。",
-            ]
+            note = (f"> 延迟是全部样本合并后的 P50（{sum(len(r['timings']) for r in live)} 轮计时）。"
+                    "成本按接口返回的 usage 计，不是估算。")
+            est_n = sum(1 for r in live if r["estimated"])
+            if est_n:
+                note += f"其中 {est_n} 场接口没返回 usage，这几场的 token 是估算值。"
+            out += ["", note]
         else:
             out += ["**0 场 —— M6 还没开始。** 下面的演示模式数据只证明链路通，不能当评测数据用。"]
         out += ["", "## 演示模式（只证明链路，不是评测）", ""]
         if mock:
             out += _table(mock)
+            out += ["", "> 演示模式的 token 由本地脚本估，成本是估算值，不是实付。"]
         else:
             out += ["（没有）"]
         out += ["", "---", "> 样本量是 1 个人练的 10 场，只写观察到的，不主张泛化结论。", ""]
