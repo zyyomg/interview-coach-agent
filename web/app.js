@@ -59,6 +59,7 @@
     nudgeFails: 0,       // 连续失败次数：服务端没有这个接口时别一直打
     paused: false,       // 手动暂停：不识别、不播报、不提交、不催场
     typing: false,       // 鼠标在输入框里：这时不把识别结果往里写
+    lastKeyAt: 0,        // 最后一次真的敲键盘的时间。"光标在框里"不算在打字
     // 统计
     stats: { turns: 0, probe: 0, clarify: 0, switch: 0, interrupts: 0, question: 0, maxQ: 8, cost: 0, inTok: 0, outTok: 0 },
     report: null,
@@ -658,12 +659,35 @@
     S.timer.silenceNudge = setTimeout(fireSilence, S.nudgeMs);
   }
 
+  // 每次跳过都把理由写进控制台。这个功能已经因为"静默跳过"排查过一轮了，
+  // 下次再不动，打开控制台看 [nudge] 那一行就知道卡在哪个条件上。
+  function nudgeSkip(reason) {
+    console.info('[nudge] 跳过：' + reason);
+  }
+
+  // 返回"为什么现在不催"，空串表示可以催。
+  function nudgeBlockedReason() {
+    if (!S.session) return '没有会话';
+    if (S.finished) return '这一场已结束';
+    if (S.paused) return '已暂停';
+    if (S.busy) return '正在生成，等它说完';
+    if (S.speaking) return '播报没结束（一直这样的话是 TTS 没回调）';
+    if ((S.finalText || '').trim() || (S.interimText || '').trim()) return '识别缓冲里还有话';
+    // 只有"刚敲过键盘"才算在打字。光标停在框里不算——那是上一个 bug：
+    // 用户点过一次输入框，S.typing 就一直是 true，冷场永远不触发。
+    if (S.typing && performance.now() - (S.lastKeyAt || 0) < 6000) return '正在打字';
+    if (S.lastVoiceAt && performance.now() - S.lastVoiceAt < 4000) return '刚刚才说过话';
+    return '';
+  }
+
   async function fireSilence() {
-    if (!S.session || S.finished || S.paused || S.busy || S.speaking) return;
-    if ((S.finalText || '').trim() || (S.interimText || '').trim()) return;   // 他在说
-    // 只有"正在打字"才跳过：输入框里可能有识别残留，拿它当"人在忙"会永远不催
-    if (S.typing) return;
-    if (S.lastVoiceAt && performance.now() - S.lastVoiceAt < 4000) return;    // 刚刚才说过话，先等等
+    const why = nudgeBlockedReason();
+    if (why) {
+      nudgeSkip(why);
+      armSilence();     // 跳过也必须把下一次挂上，否则冷场从此失效
+      return;
+    }
+    console.info('[nudge] 触发：主动接一句');
     S.busy = true;
     paintMic();
     refreshStatus();
@@ -671,7 +695,7 @@
       await stream('/api/silence', { session: S.session }, handleEvent);
       S.nudgeFails = 0;
     } catch (e) {
-      S.nudgeFails += 1;      // 旧进程还没有这个接口，别每 15 秒撞一次墙
+      S.nudgeFails += 1;      // 旧进程还没有这个接口，别每轮都撞墙
     }
     S.busy = false;
     paintMic();
@@ -771,6 +795,10 @@
   async function sendTurn(text, asrEmpty) {
     if (!S.session || S.busy || S.finished) return;
     S.busy = true;
+    // 发出去了就别再占着输入框：光标留在框里会让 S.typing 一直是 true，
+    // 冷场判断会以为用户还在打字，永远不催。（这个坑实测踩到过）
+    S.typing = false;
+    if (document.activeElement === input) input.blur();
     disarmSilence();                 // 已经开口了，冷场计时作废
     S.tSpeechEnd = performance.now();
     S.tFirstToken = 0;
@@ -1075,11 +1103,15 @@
     sendTurn(v, false);
   });
 
-  // 打字时把框撑开，顺便把「冷场计时」停掉——人在输入就说明不是冷场
+  // 打字时把框撑开，并把「冷场计时」从头算——人在输入说明不是冷场。
+  // 注意这里不能 disarm：清掉之后没人再武装，冷场就永远不触发了。
   input.addEventListener('input', () => {
     growInput();
-    disarmSilence();
+    S.lastKeyAt = performance.now();
+    armSilence();
   });
+
+  input.addEventListener('keydown', () => { S.lastKeyAt = performance.now(); });
 
   micBtn.addEventListener('click', () => {
     if (S.paused) return;

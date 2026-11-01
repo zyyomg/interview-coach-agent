@@ -22,6 +22,14 @@ const path = require('path');
 
 const APP = path.join(__dirname, '..', 'web', 'app.js');
 
+// app.js 里的 [nudge]/[asr] 诊断日志默认静音，想看就 VERBOSE=1
+if (!process.env.VERBOSE) {
+  const info = console.info;
+  console.info = () => {};
+  console.warn = () => {};
+  void info;
+}
+
 /* ---------------------------------------------------------------- 假时钟 */
 let now = 0;
 const timers = [];
@@ -240,6 +248,25 @@ const check = (ok, msg) => {
   await flush();
   advance(50);
   check(S.paused === false && sr.started, '点「继续」恢复识别');
+
+  // ⑥ 光标停在输入框里但没在敲字 → 仍然要催（实测踩过：点过一次框就再也不催了）
+  const inputEl = els.get('textInput');
+  if (inputEl._h.focus) inputEl._h.focus();
+  S.lastKeyAt = performance.now() - 10000;
+  const beforeIdleTyping = silencePosts;
+  advance(20000);
+  await flush();
+  check(silencePosts > beforeIdleTyping, `光标在框里但没打字 → 照样催场（${silencePosts - beforeIdleTyping} 次）`);
+
+  // ⑦ 刚敲过键盘 → 不催，而且过了 6 秒还得能恢复（跳过时也要重挂计时）
+  S.lastKeyAt = performance.now();
+  const beforeTyping = silencePosts;
+  advance(9000);
+  await flush();
+  check(silencePosts === beforeTyping, '刚敲过键盘 → 不催场');
+  advance(20000);
+  await flush();
+  check(silencePosts > beforeTyping, `打字停下 6 秒后仍会催（${silencePosts - beforeTyping} 次）`);
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);
