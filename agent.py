@@ -114,12 +114,20 @@ def decide(text: str, asr_empty: bool, probes: int, clarifys: int, cfg: dict,
     if asr_empty or n == 0:
         return {"action": CLARIFY, "reason": "识别为空（0 字）", "chars": n}
 
-    # 放弃词优先于"太短"：「不知道」只有 3 个字，但语义明确，该换题不是该反问
+    # 放弃词优先于"太短"：「不知道」只有 3 个字，但语义明确，该换题不是该反问。
+    # 但它必须**当真是这句话的意思**：用户说 200 多个字、中间带一句「不知道从何下手」，
+    # 被当成放弃就直接换题了（实测踩到过）。所以下面两个条件满足其一才算：
+    #   · 放弃词占了全文 1/4 以上；
+    #   · 整句很短（≤ giveup_chars）又没有数字/结果——典型就是"这块我没接触过"。
     hit = next((w for w in GIVEUP_WORDS if w in norm), None)
     if hit:
-        if switches >= max_switch:
-            return {"action": ASK, "reason": f"本题已换题 {max_switch} 次，记为未答，进下一题", "chars": n}
-        return {"action": SWITCH, "reason": f"含放弃词「{hit}」", "chars": n}
+        dominant = len(normalize(hit)) * 4 >= n
+        short_giveup = n <= int(turn_cfg.get("giveup_chars", 24)) and not has_detail(norm)
+        if dominant or short_giveup:
+            if switches >= max_switch:
+                return {"action": ASK, "reason": f"本题已换题 {max_switch} 次，记为未答，进下一题", "chars": n}
+            return {"action": SWITCH, "reason": f"含放弃词「{hit}」，且整句就是在说不会", "chars": n}
+        # 只是顺嘴提到 → 按正常内容判（继续往下走长度 / 细节那几档）
 
     if n < empty_chars:
         if clarifys >= max_clar:

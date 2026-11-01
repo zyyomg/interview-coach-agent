@@ -447,6 +447,8 @@
   /* ------------------------------------------------------------ 语音识别 */
 
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // 提示文案要分清浏览器：用户明明在用 Edge，还让他"换成 Edge"，等于把问题指错方向
+  const IS_EDGE = /Edg\//.test(navigator.userAgent || '');
   let rec = null;
 
   function initRec() {
@@ -507,12 +509,21 @@
     rec.onerror = (e) => {
       S.listening = false;
       paintMic();
+      // 留一行日志：这次到底是哪种错，别让用户只能看到"连不上"三个字
+      console.warn('[asr] error:', e.error, '| browser:', IS_EDGE ? 'Edge' : 'other');
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        degrade('麦克风没被允许，或者识别服务不可用。已切到打字模式。');
+        degrade('麦克风没有被允许，或者系统里关掉了语音识别。已切到打字模式——'
+          + '允许麦克风后，点左侧「语音」开关可以再试一次。');
       } else if (e.error === 'no-speech') {
         setStatus('没听到声音', '');
       } else if (e.error === 'network') {
-        degrade('语音识别连不上服务（Chrome 走境外服务时常见）。已切到打字模式，换成 Edge 通常就好了。');
+        degrade(IS_EDGE
+          ? '识别服务连不上（网络或代理的问题，Edge 也一样会断）。已切到打字模式——'
+            + '点左侧「语音」开关可以再试一次。'
+          : '这个浏览器的识别服务连不上（Chrome 走境外服务时常见）。已切到打字模式——'
+            + '换成 Edge 打开通常就好了。');
+      } else if (e.error === 'audio-capture') {
+        degrade('找不到麦克风设备（可能是被别的软件占用了）。已切到打字模式。');
       }
     };
 
@@ -1200,13 +1211,26 @@
     const sw = $('voiceSwitch');
     S.voice = !sw.classList.contains('on');
     S.tts = S.voice;                    // 手动关掉就是真不想听了
-    if (S.voice) S.asrDown = false;     // 手动重开，就给识别一次重试机会
     sw.classList.toggle('on', S.voice);
     $('voiceHint').textContent = S.voice ? '它会念，你说完自动接话' : '只打字，不播音';
-    if (S.voice) {
-      if (SR) tip('用语音时建议戴耳机：否则扬声器的声音可能被麦克风当成「你插话」，触发误打断。');
-      else degrade('这个浏览器没有语音识别（Chrome / Edge 才有 Web Speech API）。已切到打字模式。');
+
+    if (!S.voice) return;
+
+    // 重新打开语音 = 给识别一次真正的重试：重置判死标记、重连、马上开麦。
+    // 原来只把 asrDown 清成 false，但既没重连也没提示，用户只会觉得"开关点了没用"。
+    S.asrDown = false;
+    S.asrRetry = (S.asrRetry || 0) + 1;
+    if (!SR) {
+      degrade('这个浏览器没有语音识别（Chrome / Edge 才有 Web Speech API）。已切到打字模式。');
+      return;
     }
+    tip('语音重新打开了，正在重连识别…');
+    S.lastAsrAt = 0;
+    if (S.session && !S.finished && !S.paused) {
+      startRec();
+      armSilence();
+    }
+    refreshStatus();
   });
 
   startBtn.addEventListener('click', startSession);
@@ -1241,8 +1265,10 @@
   micBtn.addEventListener('click', () => {
     if (S.paused) return;
     if (S.asrDown) {
-      // 识别已经判死：点了也不会有反应，必须说清楚，否则用户以为按钮坏了
-      tip('<b>识别服务现在连不上</b>　点麦克风也没用，先打字；换成 Edge 打开通常就好了。');
+      // 识别已经判死：点了也不会有反应，必须说清楚；并告诉他怎么救回来
+      tip(IS_EDGE
+        ? '<b>识别服务现在连不上</b>　点麦克风没用，先打字；点左侧「语音」开关可以重连一次。'
+        : '<b>识别服务现在连不上</b>　先打字；换成 Edge 打开通常就好了。');
       return;
     }
     if (S.speaking) { interruptNow(''); return; }   // 它在说：照旧打断，但不算一次"插话"
