@@ -336,7 +336,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .composer {
   flex: none;
   display: flex;
-  align-items: center;
+  align-items: flex-end;   /* 输入框会长高，按钮贴底更稳 */
   gap: 10px;
   padding: 14px 24px 8px;
   max-width: 808px;
@@ -365,21 +365,30 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 
 .inputwrap { flex: 1; min-width: 0; }
-.inputwrap input {
+/* 用 textarea 而不是 input：一句话识别出来动辄四五十字，单行框只能看到开头，
+   用户根本不知道自己后面说了什么、有没有录进去。这里让它换行、长到 4 行停住。 */
+.inputwrap textarea {
+  display: block;
   width: 100%;
   border: 1px solid var(--line);
   background: #fff;
   border-radius: 12px;
-  padding: 13px 14px;
+  padding: 12px 14px;
   font-size: 14px;
+  line-height: 1.5;
   font-family: inherit;
   color: var(--ink);
   outline: none;
   transition: .16s;
+  resize: none;
+  min-height: 46px;
+  max-height: 116px;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
-.inputwrap input:focus { border-color: #b9c6e8; box-shadow: 0 0 0 3px rgba(43, 85, 214, .08); }
-.inputwrap input:disabled { background: #f7f8fa; color: var(--ink3); }
-.inputwrap input::placeholder { color: var(--ink3); }
+.inputwrap textarea:focus { border-color: #b9c6e8; box-shadow: 0 0 0 3px rgba(43, 85, 214, .08); }
+.inputwrap textarea:disabled { background: #f7f8fa; color: var(--ink3); }
+.inputwrap textarea::placeholder { color: var(--ink3); }
 
 .ghost {
   border: 1px solid var(--line);

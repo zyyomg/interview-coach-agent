@@ -25,6 +25,8 @@
     listening: false,
     wantListen: false,
     lastAsrAt: 0,        // 最后一次收到识别事件的时间，用来发现「mic 开着但没事件」
+    lastVoiceAt: 0,      // 最后一次「真的有人说话」的时间。和 lastAsrAt 分开：
+                         // 心跳重开麦克风也会刷新 lastAsrAt，混用会让冷场判断永远不触发
     asrRestarts: 0,      // 本轮连续重连次数，超过上限就降级打字
     hadSpeech: false,
     tts: true,           // 播报开关，和"能不能识别"分开：识别挂了也不该闭嘴
@@ -50,8 +52,10 @@
     tFirstAudio: 0,
     tDone: 0,
     reportedAudio: false,
-    timer: { silence: 0, barge: 0 },
+    timer: { silence: 0, barge: 0, silenceNudge: 0 },
     silenceMs: 2000,     // 说完了停多久算说完。1.2 秒太急，用户喘口气就被当成说完了
+    nudgeMs: 15000,      // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
+    nudgeFails: 0,       // 连续失败次数：服务端没有这个接口时别一直打
     // 统计
     stats: { turns: 0, probe: 0, clarify: 0, switch: 0, interrupts: 0, question: 0, maxQ: 8, cost: 0, inTok: 0, outTok: 0 },
     report: null,
@@ -120,6 +124,20 @@
   }
 
   function tip(html) { tipbar.innerHTML = html || ''; }
+
+  // 输入框是从一行长到四行的 textarea：识别出来的话几十个字，单行框只看得见开头，
+  // 用户不知道自己后面说了什么。这里让它跟着内容长，并且始终滚到最新一行。
+  function growInput() {
+    input.style.height = 'auto';
+    const h = Math.min(input.scrollHeight || 46, 116);
+    input.style.height = Math.max(46, h) + 'px';
+    input.scrollTop = input.scrollHeight;
+  }
+
+  function clearInput() {
+    input.value = '';
+    growInput();
+  }
 
   // 状态文字只在这一处算，避免各回调互相覆盖
   function refreshStatus() {
@@ -360,6 +378,7 @@
       input.focus();
     }
     resumeSilence();
+    armSilence();          // 它说完了，接下来该你说：开始计冷场
   }
 
   // 判断"这段声音是不是它自己"：外放时麦克风会拾到 TTS，
@@ -433,6 +452,7 @@
     rec.onspeechstart = () => {
       S.hadSpeech = true;
       S.lastAsrAt = performance.now();
+      S.lastVoiceAt = performance.now();
       // 这里不再直接判打断。外放时麦克风会拾到面试官自己的声音，
       // "一有起音就断"等于让它自己把自己打断（实测一场能误触五六次）。
       // 真正的打断交给 onresult：识别出 ≥4 个有意义的字才算。
@@ -440,6 +460,7 @@
 
     rec.onresult = (e) => {
       S.lastAsrAt = performance.now();
+      S.lastVoiceAt = performance.now();
       S.asrRestarts = 0;                  // 出字了就说明引擎活着，重连计数清零
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -450,13 +471,16 @@
       }
       S.interimText = interim;
       const merged = (S.finalText + interim).trim();
-      input.value = merged.slice(-90);
+      // 不再只留最后 90 字：留够一整段，靠输入框自己换行 + 滚到底来显示最新内容
+      input.value = merged.slice(-400);
+      growInput();
 
       // 边说边听：识别到成句的内容，就算打断，不等 VAD
       if (S.speaking && merged.length >= 4 && canBarge(merged)) {
         interruptNow(merged);
         return;
       }
+      armSilence();                     // 他开口了，冷场计时从头算
       resetSilence();
     };
 
@@ -572,12 +596,47 @@
     resetSilence();
   }
 
+  /* ------------------------------------------------------------ 冷场 */
+
+  // 轮到你说，却一个字都没来。真人面试官不会干等：先催一句，还没动静就换个更基础的问法。
+  // 判断只看"有没有识别事件 / 有没有在打字"，不去猜用户在想什么。
+
+  function disarmSilence() {
+    clearTimeout(S.timer.silenceNudge);
+  }
+
+  function armSilence() {
+    disarmSilence();
+    if (!S.session || S.finished || S.nudgeFails >= 3) return;
+    S.timer.silenceNudge = setTimeout(fireSilence, S.nudgeMs);
+  }
+
+  async function fireSilence() {
+    if (!S.session || S.finished || S.busy || S.speaking) return;
+    if ((S.finalText || '').trim() || (S.interimText || '').trim()) return;   // 他在说
+    if (input.value.trim()) return;                                          // 他在打字
+    if (S.lastVoiceAt && performance.now() - S.lastVoiceAt < 4000) return;    // 刚刚才说过话，先等等
+    S.busy = true;
+    paintMic();
+    refreshStatus();
+    try {
+      await stream('/api/silence', { session: S.session }, handleEvent);
+      S.nudgeFails = 0;
+    } catch (e) {
+      S.nudgeFails += 1;      // 旧进程还没有这个接口，别每 15 秒撞一次墙
+    }
+    S.busy = false;
+    paintMic();
+    refreshStatus();
+    armSilence();
+  }
+
   function commitSpeech() {
     const text = (S.finalText || '').trim();
     const had = S.hadSpeech;
     const empty = !text;
     stopRec();
-    input.value = '';
+    clearInput();
     S.finalText = '';
     S.interimText = '';
     if (empty && !had) return;
@@ -622,6 +681,7 @@
     S.sentChars = 0;
     S.spokenChars = 0;
     S.asrRestarts = 0;
+    S.lastVoiceAt = 0;
 
     try {
       await stream('/api/session/start', { role: S.role, rounds: S.rounds }, (ev) => {
@@ -650,11 +710,14 @@
     startBtn.disabled = false;
     startBtn.textContent = '重新开始';
     paintMic();
+    S.nudgeFails = 0;
+    armSilence();
   }
 
   async function sendTurn(text, asrEmpty) {
     if (!S.session || S.busy || S.finished) return;
     S.busy = true;
+    disarmSilence();                 // 已经开口了，冷场计时作废
     S.tSpeechEnd = performance.now();
     S.tFirstToken = 0;
     S.tFirstAudio = 0;
@@ -736,6 +799,7 @@
         else {
           refreshStatus();
           if (!S.voice) { input.disabled = false; input.focus(); }
+          armSilence();       // 拿到新问题了，开始等他回答
         }
         break;
       }
@@ -757,6 +821,7 @@
 
   async function finishSession() {
     S.finished = true;
+    disarmSilence();
     stopRec();
     paintMic();
     input.disabled = true;
@@ -942,17 +1007,23 @@
   sendBtn.addEventListener('click', () => {
     const v = input.value.trim();
     if (!v) return;
-    input.value = '';
+    clearInput();
     sendTurn(v, false);
   });
 
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.isComposing) {
-      const v = input.value.trim();
-      if (!v) return;
-      input.value = '';
-      sendTurn(v, false);
-    }
+    if (e.key !== 'Enter' || e.isComposing) return;
+    if (e.shiftKey) return;                 // Shift+Enter 换行，不发送
+    const v = input.value.trim();
+    if (!v) return;
+    clearInput();
+    sendTurn(v, false);
+  });
+
+  // 打字时把框撑开，顺便把「冷场计时」停掉——人在输入就说明不是冷场
+  input.addEventListener('input', () => {
+    growInput();
+    disarmSilence();
   });
 
   micBtn.addEventListener('click', () => {
@@ -1129,6 +1200,7 @@
     .then((r) => r.json())
     .then((h) => {
       S.mock = !!h.mock;
+      if (h.silence_seconds) S.silenceMs = h.silence_seconds * 1000;   // 冷场多久催一句，跟 config.json 走
       const dot = $('modeDot');
       dot.classList.add(S.mock ? 'mock' : 'live');
       $('modeText').textContent = S.mock

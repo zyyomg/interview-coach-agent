@@ -108,6 +108,7 @@ class Handler(BaseHTTPRequestHandler):
                 "mock": mock,
                 "questions": CONFIG.get("max_questions"),
                 "roles": CONFIG.get("roles"),
+                "silence_seconds": CONFIG.get("silence_seconds", 15),
             })
             return
 
@@ -165,6 +166,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/turn":
             return self._turn(body)
+
+        if path == "/api/silence":
+            return self._silence(body)
 
         if path == "/api/interrupt":
             sess = self._session(body)
@@ -245,6 +249,21 @@ class Handler(BaseHTTPRequestHandler):
                 bool(body.get("asr_empty")),
                 emit,
             )
+        sess.save()
+
+    def _silence(self, body: dict):
+        """候选人不说话时，让面试官主动接一句。
+
+        前端只在「轮到你说 + 15 秒没有任何识别事件 + 没在打字」时才调，
+        所以这里不用再判断条件，直接让 agent 决定是催一句还是换个问法。
+        """
+        sess = self._session(body, stream=True)
+        if not sess:
+            return
+        self._open_stream()
+        emit = self._emitter()
+        with sess.lock:
+            sess.agent.silence(emit)
         sess.save()
 
     def _report(self, body: dict):

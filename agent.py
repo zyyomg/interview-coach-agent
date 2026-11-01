@@ -29,8 +29,9 @@ PROBE = "probe"
 SWITCH = "switch"
 ASK = "ask"
 CLOSE = "close"
+NUDGE = "nudge"      # 候选人不说话，面试官主动催一句
 
-LABEL = {CLARIFY: "澄清", PROBE: "追问", SWITCH: "换题", ASK: "提问", CLOSE: "收尾"}
+LABEL = {CLARIFY: "澄清", PROBE: "追问", SWITCH: "换题", ASK: "提问", CLOSE: "收尾", NUDGE: "催场"}
 
 GIVEUP_WORDS = (
     "不知道", "没做过", "跳过", "不会", "不清楚", "忘了",
@@ -499,6 +500,7 @@ class InterviewAgent:
         self.clarifys = 0
         self.switches = 0
         self.easier = 0
+        self.silences = 0            # 连续几次没开口，用户一说话就清零
         self.turn_seq = 0
         self.finished = False
         self.started_at = time.time()
@@ -613,6 +615,8 @@ class InterviewAgent:
     def handle_user(self, text: str, asr_empty: bool, emit):
         self.turn_seq += 1
         turn_id = self.turn_seq
+        if normalize(text):
+            self.silences = 0        # 开口了，冷场计数清零
         decision = decide(text, asr_empty, self.probes, self.clarifys, self.cfg, self.switches)
         action = decision["action"]
 
@@ -707,6 +711,65 @@ class InterviewAgent:
         })
         emit({"t": "done", "turn": turn_id, "question": self.question_index,
               "state": self.state(), "finished": True})
+
+    # -- 冷场 --------------------------------------------------------
+    def silence(self, emit):
+        """候选人一直没开口时，面试官主动接一句。
+
+        为什么不走 decide()：空文本在那儿会被判成 CLARIFY（那是给识别失败用的），
+        连催两次就变成「我没听清」，用户会以为麦克风坏了——而这里的事实是
+        「他没说话」，该做的是催一句或者换个更好开口的问法。
+        """
+        max_switch = int(self.cfg.get("max_switch_per_question", 2))
+        if self.silences >= 2:
+            return      # 催过一句、也换过问法了，再刷屏只会烦人，安静等他自己说
+        if self.silences == 1 and self.switches >= max_switch:
+            return      # 想换，但本题换题次数已经到上限了
+
+        self.silences += 1
+        self.turn_seq += 1
+        turn_id = self.turn_seq
+
+        if self.silences == 1:
+            line = "不着急，想到什么说什么，我们接着聊。"
+            emit({"t": "meta", "turn": turn_id, "action": NUDGE, "label": LABEL[NUDGE],
+                  "reason": "一直没开口，先催一句", "question": self.question_index,
+                  "max_question": self.max_questions})
+            emit({"t": "tok", "d": line})
+            emit({"t": "sent", "d": line})
+            emit({"t": "usage", "in": 0, "out": 0, "cost": round(self.cost(), 4), "cached": True})
+            self.history.append({"role": "assistant", "content": line})
+            self.turns.append({
+                "turn": turn_id + 0.1, "role": "agent", "text": line, "action": NUDGE,
+                "action_label": LABEL[NUDGE], "reason": "模板催场，未调模型",
+                "question": self.question_index, "zero_cost": True,
+                "ts": round(time.time() - self.started_at, 3),
+            })
+            emit({"t": "done", "turn": turn_id, "question": self.question_index,
+                  "state": self.state(), "finished": False})
+            return
+
+        # 第二次还没动静：换个更基础的问法，这句要模型说
+        self.switches += 1
+        self.probes = 0
+        self.easier = min(2, self.easier + 1)
+        emit({"t": "meta", "turn": turn_id, "action": SWITCH, "label": LABEL[SWITCH],
+              "reason": "两次没开口，换个更好开口的问法", "question": self.question_index,
+              "max_question": self.max_questions})
+        text = self._generate(
+            emit,
+            "候选人连着两次都没开口，可能是这题太大。换一个更基础、更容易开口的同类问题，"
+            "一句话，语气正常，不要安慰他。",
+            max_tokens=200,
+        )
+        self.history.append({"role": "assistant", "content": text})
+        self.turns.append({
+            "turn": turn_id + 0.1, "role": "agent", "text": text, "action": SWITCH,
+            "action_label": LABEL[SWITCH], "reason": "冷场换题", "question": self.question_index,
+            "ts": round(time.time() - self.started_at, 3),
+        })
+        emit({"t": "done", "turn": turn_id, "question": self.question_index,
+              "state": self.state(), "finished": False})
 
     # -- 打断 --------------------------------------------------------
     def interrupt(self, ratio: float, spoken: str, heard: str) -> dict:
@@ -1149,6 +1212,7 @@ def load_config(path: Path | str | None = None) -> dict:
     cfg.setdefault("max_probe_per_question", 2)
     cfg.setdefault("max_clarify_per_question", 2)
     cfg.setdefault("max_switch_per_question", 2)
+    cfg.setdefault("silence_seconds", 15)
     cfg.setdefault("turn", {})
     for k, v in (("empty_chars", 4), ("short_chars", 22), ("max_sentence_chars", 60),
                  ("soft_sentence_chars", 22), ("history_limit", 30)):

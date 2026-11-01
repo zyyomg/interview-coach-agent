@@ -140,10 +140,12 @@ const TURN = [
 ];
 
 const timingPosts = [];
+let silencePosts = 0;
 global.fetch = async (url, opts) => {
   const u = String(url);
   if (u.includes('/api/history')) return { ok: true, json: async () => ({ ok: true, items: [] }) };
   if (u.includes('/api/timing')) { try { timingPosts.push(JSON.parse(opts.body)); } catch (e) { /* ignore */ } return ndjson([{ ok: true }]); }
+  if (u.includes('/api/silence')) { silencePosts += 1; return ndjson([]); }
   if (u.includes('/api/session/start')) return ndjson(START);
   if (u.includes('/api/turn')) return ndjson(TURN);
   return ndjson([{ ok: true }]);
@@ -181,8 +183,9 @@ const check = (ok, msg) => {
   if (rec.onstart) rec.onstart();
   const beforeAbort = sr.abortCalls;
   const beforeStart = sr.startCalls;
-  advance(15000);
-  check(sr.abortCalls > beforeAbort, `15 秒没事件 → 心跳 abort 重开（${sr.abortCalls - beforeAbort} 次）`);
+  advance(14000);
+  await flush();
+  check(sr.abortCalls > beforeAbort, `14 秒没事件 → 心跳 abort 重开（${sr.abortCalls - beforeAbort} 次）`);
   check(sr.startCalls > beforeStart, `重开之后又 start 了（${sr.startCalls - beforeStart} 次）`);
 
   // ② 说完一轮提交后，麦克风要自己接上
@@ -193,6 +196,14 @@ const check = (ok, msg) => {
   await flush();
   advance(400);
   check(sr.startCalls > beforeTurn, `一轮说完了，麦克风自动接上（start ${sr.startCalls - beforeTurn} 次）`);
+
+  // ③ 冷场：轮到你说，却一直没动静。面试官要主动接一句。
+  //    注意这期间心跳会重开麦克风，不能因此把冷场计时搅黄（两者用不同时间戳）。
+  advance(5000);
+  const beforeNudge = silencePosts;
+  advance(17000);
+  await flush();
+  check(silencePosts > beforeNudge, `冷场 20 秒 → 主动催场（调了 ${silencePosts - beforeNudge} 次）`);
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);
