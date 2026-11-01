@@ -366,19 +366,30 @@ class LLMClient:
         if self.mock:
             yield from self._mock_stream(messages, max_tokens, purpose)
         else:
-            yield from self._live_stream(messages, temperature, max_tokens)
+            yield from self._live_stream(messages, temperature, max_tokens, purpose)
 
     # -- 真实模型 ----------------------------------------------------
-    def _live_stream(self, messages, temperature, max_tokens):
+    def _live_stream(self, messages, temperature, max_tokens, purpose="turn"):
+        """调真实的流式接口。
+
+        **思考模式必须显式关掉（对话这一路）**：DeepSeek 默认 thinking=enabled、effort=high，
+        模型会先把 token 花在思维链（`reasoning_content`）上，`content` 迟迟为空。
+        对语音面试来说这是致命的——首音要等它"想完"才出，一句话能等好几秒；
+        而且思维链按输出 token 计费。复盘那一路可以开，靠 `config.json` 的 thinking 区分。
+        """
         url = f"{self.base}/chat/completions"
+        think = (self.cfg.get("thinking") or {}).get(purpose, "disabled")
         body = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "temperature": temperature,
             "max_tokens": max_tokens,
             "stream_options": {"include_usage": True},
+            "thinking": {"type": think},
         }
+        # 思考模式下官方明确说 temperature 不生效，就不发了；非思考模式照旧
+        if think != "enabled":
+            body["temperature"] = temperature
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.key}",
@@ -390,14 +401,14 @@ class LLMClient:
             resp = urlrequest.urlopen(req, timeout=60)
         except HTTPError as e:
             detail = e.read().decode("utf-8", "ignore")[:400]
-            # 少数兼容端点不认 stream_options，去掉重试一次
-            if "stream_options" in detail:
-                body.pop("stream_options", None)
-                req = urlrequest.Request(url, data=json.dumps(body).encode("utf-8"),
-                                         headers=headers, method="POST")
-                resp = urlrequest.urlopen(req, timeout=60)
-            else:
+            # 兼容性退让：少数端点（或旧版接口）不认这些可选字段，去掉重试一次
+            drop = next((k for k in ("stream_options", "thinking") if k in detail), None)
+            if drop is None:
                 raise RuntimeError(f"HTTP {e.code}: {detail}") from None
+            body.pop(drop, None)
+            req = urlrequest.Request(url, data=json.dumps(body).encode("utf-8"),
+                                     headers=headers, method="POST")
+            resp = urlrequest.urlopen(req, timeout=60)
 
         usage = {}
         text_len = 0
@@ -1227,6 +1238,7 @@ def load_config(path: Path | str | None = None) -> dict:
     cfg.setdefault("max_switch_per_question", 2)
     cfg.setdefault("silence_seconds", 5)
     cfg.setdefault("silence_close_seconds", 5)
+    cfg.setdefault("thinking", {"turn": "disabled", "report": "enabled"})
     cfg.setdefault("turn", {})
     for k, v in (("empty_chars", 4), ("short_chars", 22), ("max_sentence_chars", 60),
                  ("soft_sentence_chars", 22), ("history_limit", 30)):

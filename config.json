@@ -10,6 +10,12 @@
   "silence_seconds": 5,
   "silence_close_seconds": 5,
 
+  "thinking": {
+    "turn": "disabled",
+    "report": "enabled",
+    "_note": "DeepSeek 思考模式默认是开的（effort=high）。对话必须关：否则思维链先占住 token，首音要等它想完；思维链还按输出 token 计费。复盘那一路开着，一次而已"
+  },
+
   "turn": {
     "empty_chars": 4,
     "short_chars": 22,
