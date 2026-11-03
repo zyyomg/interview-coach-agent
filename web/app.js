@@ -11,19 +11,24 @@
   const pauseBtn = $('pauseBtn');
   const startBtn = $('startBtn');
   const tipbar = $('tipbar');
-  const resumeSwitch = $('resumeSwitch');
   const resumeBox = $('resumeBox');
   const resumeFile = $('resumeFile');
   const resumePaste = $('resumePaste');
   const resumeMeta = $('resumeMeta');
-  const resumeHint = $('resumeHint');
+  const roleInput = $('roleInput');
+  const roleSeg = $('roleSeg');
+  const formHint = $('formHint');
+
+  // 预设岗位的显示名，只用于界面文案（服务端那份在 config.json 的 roles 里）
+  const ROLE_LABEL = { ai_pm: 'AI 产品经理', pm: '产品经理', general: '通用岗位' };
 
   const S = {
     session: null,
-    resumeOn: false,      // 按简历面试的开关
+    form: 'casual',       // casual 体验式（不带简历）/ formal 正式（必须带简历）
     resumeText: '',       // 解析/粘贴出来的简历正文
     resumeName: '',
-    role: 'ai_pm',
+    role: 'ai_pm',        // 预设岗位 key
+    roleTitle: '',        // 自己写的岗位名；有值时优先于 role
     rounds: 8,
     level: 'normal',      // easy / normal / hard：只影响判定阈值和提问深度
     voice: true,
@@ -103,7 +108,13 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
     });
-    if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+    // 服务端拒绝开局时会带一句人话（比如「正式面试要先给简历」）。
+    // 直接抛 HTTP 400，用户只看到一串状态码，不知道该改哪里。
+    if (!res.ok || !res.body) {
+      let hint = '';
+      try { const d = await res.json(); hint = d.hint || ''; } catch (e) { /* 不是 JSON 就算了 */ }
+      throw new Error(hint || ('HTTP ' + res.status));
+    }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -908,22 +919,37 @@
     }).catch(() => setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad'));
   }
 
-  function toggleResume() {
-    S.resumeOn = !resumeSwitch.classList.contains('on');
-    resumeSwitch.classList.toggle('on', S.resumeOn);
-    resumeBox.hidden = !S.resumeOn;
-    resumeHint.textContent = S.resumeOn ? '按你上传的简历提问' : '默认：按岗位通用提问';
-    if (S.resumeOn && !S.resumeText) {
+  // ---- 岗位 / 面试方式 ----
+  function roleLabel() {
+    return (S.roleTitle || ROLE_LABEL[S.role] || ROLE_LABEL.general).trim();
+  }
+
+  function paintRole() {
+    const el = $('emptyRole');
+    if (el) el.textContent = roleLabel();
+    roleInput.classList.toggle('on', !!S.roleTitle);
+  }
+
+  // 体验式 / 正式：只有正式才展开简历区。
+  // 这里不再是"按简历提问"的开关——那样会让人以为岗位选择没用，
+  // 两档本来就该是两种面试：随手练 vs 拿简历真打。
+  function applyForm() {
+    const formal = S.form === 'formal';
+    resumeBox.hidden = !formal;
+    formHint.textContent = formal
+      ? '读你的简历，从项目里挑着问'
+      : '不带简历，按岗位通用题问，随手练';
+    formHint.classList.toggle('on', formal);
+    if (formal && !S.resumeText) {
       setTimeout(() => { try { resumePaste.focus(); } catch (e) {} }, 60);
     }
   }
-
   async function startSession() {
     if (S.busy) return;
-    if (S.resumeOn) {
+    if (S.form === 'formal') {
       const text = (resumePaste.value || '').trim();
       if (text.length < 60) {
-        tip('简历内容太短，像是没读到。换个文件，或把文字粘到下面；也可以关掉「按简历面试」。');
+        tip('正式面试要读简历：先选一个 .docx，或把简历文字粘上去。只想随手练，就切回「体验式」。');
         return;
       }
       S.resumeText = text;
@@ -970,9 +996,9 @@
 
     try {
       await stream('/api/session/start', {
-        role: S.role, rounds: S.rounds, level: S.level,
-        resume_text: S.resumeOn ? S.resumeText : '',
-        resume_name: S.resumeOn ? S.resumeName : '',
+        role: S.roleTitle || S.role, rounds: S.rounds, level: S.level, form: S.form,
+        resume_text: S.form === 'formal' ? S.resumeText : '',
+        resume_name: S.form === 'formal' ? S.resumeName : '',
       }, (ev) => {
         if (ev.t === 'session') {
           S.session = ev.id;
@@ -987,16 +1013,17 @@
           if (S.voice) startRec();
           tip(S.mock
             ? '演示模式：没有检测到模型 Key，面试官由本地脚本扮演。配好 <b>DEEPSEEK_API_KEY</b> 后重启即可换成真模型。'
-            : (S.resumeMode
-              ? `简历模式 · 已读 ${ev.resume_chars} 字 · 面试官会从简历里挑项目提问`
-              : `真实模型 · ${S.rounds} 个话题 · 一场约 ¥0.03`));
+            : (S.form === 'formal'
+              ? `正式面试 · 已读 ${ev.resume_chars} 字 · 面试官会从简历里挑项目提问`
+              : `体验式 · ${ev.role_name || roleLabel()} · ${S.rounds} 个话题 · 一场约 ¥0.03`));
         } else {
           handleEvent(ev);
         }
       });
     } catch (e) {
       setStatus('开局失败', '');
-      tip(`<b>连不上本地服务：${e.message}</b>`);
+      const m = String((e && e.message) || '');
+      tip(`<b>${/^HTTP|fetch|NetworkError/i.test(m) ? '连不上本地服务：' + m : m}</b>`);
     }
 
     S.busy = false;
@@ -1211,6 +1238,7 @@
 
     const rows = [
       ['时长', (m.duration_s || 0) + ' 秒'],
+      ['面试方式', m.form_name || '—'],
       ['难度', m.level_name || '标准'],
       ['话题', `${m.questions || 0} / ${m.max_questions || 0}`],
       ['回答轮次', `${m.user_turns || 0}（澄清 ${(m.actions || {}).clarify || 0}）`],
@@ -1348,10 +1376,11 @@
     box.id = 'empty';
     box.innerHTML = `
       <div class="empty-mark">对练</div>
-      <h2>选个岗位，直接开口。</h2>
+      <h2><span id="emptyRole"></span>，直接开口。</h2>
       <p>面试官一次只问一个问题：你答得含糊它追问，答得漂亮它换题，你随时可以打断它。结束后给你一份复盘和一组数据。</p>
       <div class="empty-tips"><span>8 个话题约 10 分钟</span><span>一场约 ¥0.03</span><span>不需要注册</span></div>`;
     chat.appendChild(box);
+    paintRole();                    // 岗位名用 textContent 填，不拼进 HTML
     S.session = null;
     S.finished = false;
     S.started = false;
@@ -1382,10 +1411,35 @@
       seg.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
       btn.classList.add('on');
       seg.dataset.value = btn.dataset.v;
-      if (seg.id === 'roleSeg') S.role = btn.dataset.v;
+      if (seg.id === 'roleSeg') {
+        // 选预设就把自己写的清掉：两个只能有一个生效，
+        // 否则会出现「按钮亮着 AI 产品经理、实际按输入框那个岗在问」
+        S.role = btn.dataset.v;
+        S.roleTitle = '';
+        roleInput.value = '';
+        paintRole();
+      }
       if (seg.id === 'roundSeg') S.rounds = parseInt(btn.dataset.v, 10);
       if (seg.id === 'levelSeg') S.level = btn.dataset.v;
+      if (seg.id === 'formSeg') {
+        S.form = btn.dataset.v;
+        applyForm();
+      }
     });
+  });
+
+  // 自己写岗位：预设不够用时兜底。一打字就取消预设高亮，清空则退回上次选的预设。
+  roleInput.addEventListener('input', () => {
+    S.roleTitle = roleInput.value.trim();
+    if (S.roleTitle) {
+      roleSeg.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
+      roleSeg.dataset.value = '';
+    } else {
+      const cur = roleSeg.querySelector(`button[data-v="${S.role}"]`);
+      if (cur) cur.classList.add('on');
+      roleSeg.dataset.value = S.role;
+    }
+    paintRole();
   });
 
   $('voiceSwitch').addEventListener('click', () => {
@@ -1410,7 +1464,6 @@
   startBtn.addEventListener('click', startSession);
   endBtn.addEventListener('click', endEarly);
 
-  resumeSwitch.addEventListener('click', toggleResume);
   resumeFile.addEventListener('change', (e) => pickResume(e.target.files && e.target.files[0]));
   resumePaste.addEventListener('input', () => {
     S.resumeText = (resumePaste.value || '').trim();
@@ -1697,4 +1750,6 @@
   paintSpend();
   loadSpend();
   loadHistory();
+  paintRole();      // 空状态标题跟着岗位走，选了「数据分析师」就显示它
+  applyForm();      // 体验式默认不展开简历区
 })();

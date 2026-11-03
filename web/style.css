@@ -88,6 +88,7 @@ h1, h2, h3, h4, p { margin: 0; }
 
 .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
 .seg.tiny { grid-template-columns: repeat(4, 1fr); }
+.seg.two { grid-template-columns: repeat(2, 1fr); }
 
 .seg button {
   border: 1px solid var(--line);
@@ -126,6 +127,20 @@ h1, h2, h3, h4, p { margin: 0; }
 .switch.on span { left: 19px; }
 
 .hint2 { font-size: 11.5px; color: var(--ink3); line-height: 1.4; }
+#formHint { margin-top: 7px; }
+#formHint.on { color: var(--accent); }
+
+/* 自己写岗位：预设三个不够用时兜底，留空就还用预设 */
+.txt {
+  width: 100%; margin-top: 6px;
+  border: 1px solid var(--line); border-radius: 9px;
+  padding: 8px 10px; font-family: inherit; font-size: 12.5px;
+  color: var(--ink); background: #fff;
+  transition: border-color .15s, box-shadow .15s;
+}
+.txt::placeholder { color: var(--ink3); }
+.txt:focus { outline: none; border-color: #c3cfe8; box-shadow: 0 0 0 3px rgba(43, 85, 214, .08); }
+.txt.on { border-color: #c5d2f8; background: var(--accent-soft); }
 
 /* 简历模式：关着时完全不占位置，打开才展开上传区 */
 .resume-box { margin-top: 8px; }

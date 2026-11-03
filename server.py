@@ -133,14 +133,14 @@ def parse_resume(name: str, raw: bytes) -> dict:
 
 class Session:
     def __init__(self, role: str, rounds: int, level: str = "normal",
-                 resume_text: str = "", resume_name: str = ""):
+                 resume_text: str = "", resume_name: str = "", form: str = ""):
         self.id = uuid.uuid4().hex[:12]
         self.lock = threading.Lock()
         self.created = time.time()
         self.agent = A.InterviewAgent(
             CONFIG, self.id, role, rounds,
             A.LLMClient(CONFIG, force_mock=STATE["mock"]),
-            level=level, resume_text=resume_text, resume_name=resume_name,
+            level=level, resume_text=resume_text, resume_name=resume_name, form=form,
         )
 
     def save(self, report: dict | None = None) -> str:
@@ -255,13 +255,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._resume(body)
 
         if path == "/api/session/start":
-            role = str(body.get("role") or "ai_pm")
+            # role 既可以是预设 key（ai_pm / pm / general），也可以直接是岗位名。
+            # 手写岗位由 agent 那边洗（限长、限字符），这里只做长度上限。
+            role = str(body.get("role") or "ai_pm").strip()[:24]
             rounds = int(body.get("rounds") or CONFIG.get("max_questions", 8))
             rounds = max(4, min(20, rounds))
             level = str(body.get("level") or CONFIG.get("level") or "normal")
             resume_text = str(body.get("resume_text") or "").strip()[:RESUME_MAX_CHARS]
             resume_name = str(body.get("resume_name") or "").strip()[:120]
-            return self._start(role, rounds, level, resume_text, resume_name)
+            form = str(body.get("form") or "").strip().lower()
+            if form not in ("casual", "formal"):
+                form = "formal" if resume_text else "casual"
+            # 「正式」就是读简历，没有简历不该静悄悄降级成体验式——
+            # 用户会以为自己在打正式场，实际问的全是通用题
+            if form == "formal" and len(resume_text) < 60:
+                return self._json({
+                    "ok": False, "kind": "no_resume",
+                    "hint": "正式面试要读简历：先选一个 .docx，或把简历文字粘进去；"
+                            "只想随手练就切回「体验式」。",
+                }, 400)
+            return self._start(role, rounds, level, resume_text, resume_name, form)
 
         if path == "/api/turn":
             return self._turn(body)
@@ -342,8 +355,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(out, 200 if out.get("ok") else 400)
 
     def _start(self, role: str, rounds: int, level: str = "normal",
-               resume_text: str = "", resume_name: str = ""):
-        sess = Session(role, rounds, level, resume_text, resume_name)
+               resume_text: str = "", resume_name: str = "", form: str = ""):
+        sess = Session(role, rounds, level, resume_text, resume_name, form)
         with LOCK:
             SESSIONS[sess.id] = sess
         self._open_stream()
@@ -351,7 +364,8 @@ class Handler(BaseHTTPRequestHandler):
         emit({"t": "session", "id": sess.id, "role": sess.agent.role_key,
               "role_name": sess.agent.role_name, "max_question": sess.agent.max_questions,
               "level": sess.agent.level_key, "level_name": sess.agent.level.get("name", "标准"),
-              "mode": sess.agent.llm.mode,
+              "mode": sess.agent.llm.mode, "form": sess.agent.form,
+              "form_name": sess.agent.form_name,
               "resume": bool(sess.agent.resume_used),
               "resume_chars": len(sess.agent.resume_used)})
         with sess.lock:

@@ -345,6 +345,18 @@ _KEEP = re.compile(r"[^\s，。！？；：、,.!?;:…\-—~`\"'“”‘’（
 
 _NOISE = re.compile(r"^[嗯呃啊哦噢诶欸唉哈呀吧嘛呢么，。、\s]+$")
 
+# 手写岗位名的白名单：允许中英文、数字和常见的分隔符。
+# 岗位名会直接进系统提示词，任意字符一律过滤——提示词里最不该出现的就是
+# 用户随手粘进来的换行和指令。
+_ROLE_BAD = re.compile(r"[^\u4e00-\u9fa5A-Za-z0-9 +/·\-（）()]")
+
+
+def _clean_role_title(raw: str, limit: int = 16) -> str:
+    """把手写岗位名洗成能进提示词的样子。洗空了就当没填（回退通用岗位）。"""
+    t = _ROLE_BAD.sub("", str(raw or ""))
+    t = re.sub(r"\s+", " ", t).strip()
+    return t[:limit].strip()
+
 
 def _snip(text: str, n: int = 12) -> str:
     """从用户回答里抠一小段能复述的原文，用来做「回声式追问」。
@@ -551,15 +563,34 @@ class InterviewAgent:
 
     def __init__(self, cfg: dict, session_id: str, role_key: str = "ai_pm",
                  max_questions: int | None = None, llm: LLMClient | None = None,
-                 level: str = "normal", resume_text: str = "", resume_name: str = ""):
+                 level: str = "normal", resume_text: str = "", resume_name: str = "",
+                 form: str = ""):
         self.cfg = cfg
         self.session_id = session_id
-        self.role_key = role_key if role_key in (cfg.get("roles") or {}) else "general"
-        self.role_name = cfg["roles"][self.role_key]
+        # 岗位：ai_pm / pm / general 三个预设之外，允许直接把岗位名传进来。
+        # 「只想面产品经理」和「我要面数据分析师」都得能问，否则预设之外的候选人
+        # 只能被塞进「通用」，问出来全是经历题。
+        roles = cfg.get("roles") or {}
+        if role_key in roles:
+            self.role_key, self.role_name = role_key, roles[role_key]
+        else:
+            custom = _clean_role_title(role_key)
+            if custom:
+                self.role_key, self.role_name = "custom", custom
+            else:
+                self.role_key = "general"
+                self.role_name = roles.get("general", "通用岗位")
         self.max_questions = int(max_questions or cfg.get("max_questions", 8))
         self.llm = llm or LLMClient(cfg)
         self.level_key = level if level in (cfg.get("levels") or {}) else "normal"
         self.level = level_cfg(cfg, self.level_key)
+
+        # 面试方式：casual 体验式（不带简历）/ formal 正式（读简历）。
+        # 不传就按有没有简历推——旧的调用方（selftest、tools）不用改。
+        self.form = form if form in ("casual", "formal") else (
+            "formal" if (resume_text or "").strip() else "casual"
+        )
+        self.form_name = "正式面试" if self.form == "formal" else "体验式"
 
         # 简历模式：只把前 N 字喂给模型，避免长简历吃掉对话预算。
         # 原文不落盘（session.json 只记文件名和字数）——简历是个人信息，
@@ -592,6 +623,18 @@ class InterviewAgent:
     # -- 提示词 ------------------------------------------------------
     def system_prompt(self) -> str:
         depth = self.level.get("ask_note", "")
+        if self.role_key == "general":
+            role_line = "岗位说明：不限定行业，按经历、方法、协作、动机提问，不预设行业术语。\n"
+        else:
+            role_line = (
+                f"岗位说明：只出「{self.role_name}」这个岗位真实会问的题"
+                "（相关经历、专业能力、协作、动机），不要出别的岗位的题。\n"
+            )
+        # 没简历时它爱顺口来一句「你简历上写的那个项目」。当场没人给过简历，
+        # 这句一出整场就假了，所以直接说不许提。
+        no_resume_line = "" if self.resume_used else (
+            "本场没有简历：不要提「简历」「履历」，也不要假装看过。\n"
+        )
         resume_block = ""
         if self.resume_used:
             resume_block = (
@@ -609,6 +652,8 @@ class InterviewAgent:
             f"你是一场「{self.role_name}」岗位的模拟面试官，正在和候选人做语音面试。\n"
             f"本次共 {self.max_questions} 个话题，现在是第 {max(1, self.question_index)} 个。\n"
             + (f"本场难度：{depth}\n" if depth else "")
+            + role_line
+            + no_resume_line
             + resume_block
             + "说话规则：\n"
             "1. 每次只说一句话：一个提问，或一句追问。不寒暄、不点评、不一次问两件事。\n"
@@ -1004,6 +1049,8 @@ class InterviewAgent:
             "mode": self.llm.mode,
             "level": self.level_key,
             "level_name": self.level.get("name", "标准"),
+            "form": self.form,
+            "form_name": self.form_name,
         }
 
     # -- 复盘 --------------------------------------------------------
@@ -1223,6 +1270,7 @@ class InterviewAgent:
             "session_id": self.session_id,
             "role": self.role_key,
             "role_name": self.role_name,
+            "form": self.form,
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.started_at)),
             "duration_s": round((self.ended_at or time.time()) - self.started_at, 1),
             "max_questions": self.max_questions,
@@ -1268,8 +1316,11 @@ def render_markdown(report: dict) -> str:
     def ms(v):
         return f"{v:.0f} ms" if isinstance(v, (int, float)) else "—"
 
+    # 往下翻报告的人先要知道这是哪种面试：体验式（通用题）和正式（读简历）的
+    # 分数不该被当成同一件事看
+    title = " · ".join(x for x in (m.get("role", ""), m.get("form_name", "")) if x)
     lines = [
-        f"# 对练复盘 · {m.get('role', '')}",
+        f"# 对练复盘 · {title}",
         "",
         f"> {report.get('verdict', '')}　**{report.get('score', '—')} / 100**",
         "",
