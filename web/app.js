@@ -901,7 +901,7 @@
         S.resumeText = d.text || '';
         S.resumeName = d.name || file.name;
         resumePaste.value = S.resumeText;
-        setResumeMeta(`已读 ${S.resumeName} · ${d.chars} 字 · 只在本机解析，原文不进会话记录`, 'ok');
+        setResumeMeta(`已读 ${S.resumeName} · ${d.chars} 字 · 不写入会话记录；提问时会随提示词发给模型`, 'ok');
       } catch (e) {
         setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad');
       }
@@ -1416,7 +1416,7 @@
     S.resumeText = (resumePaste.value || '').trim();
     if (S.resumeText) {
       if (!S.resumeName) S.resumeName = '粘贴的简历';
-      setResumeMeta(`${S.resumeText.length} 字 · 只在本机解析，原文不进会话记录`, 'ok');
+      setResumeMeta(`${S.resumeText.length} 字 · 不写入会话记录；提问时会随提示词发给模型`, 'ok');
     } else {
       S.resumeName = '';
       setResumeMeta('还没读到内容', '');
