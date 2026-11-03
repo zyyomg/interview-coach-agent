@@ -333,6 +333,9 @@ MOCK_SWITCH = (
 
 MOCK_CLOSE = "今天先到这儿，我整理一下。"
 
+# 演示模式没有模型，读不懂简历，但这句至少不会穿帮：它只说“从简历里挑”，不编具体项目
+MOCK_OPEN_RESUME = "简历我看过了，先挑一个你最想聊的项目，讲讲你具体负责哪块。"
+
 _FILLER = re.compile(
     r"^(我觉得|我认为|我感觉|我负责|我做了|我做过|我们|然后|后来|当时|那个|就是说|其实|反正|大概|我)+"
 )
@@ -505,8 +508,15 @@ class LLMClient:
             kw = ""              # 太短或本身就是"没做过"，别复述了
         # "收尾"要放在最前面判：收尾的指令里常带"不要追问"这类话，
         # 先匹配"追问"就会把收尾演成一次追问（演示模式实测踩到过）
+        # 简历模式只能从系统提示词判断：_mock_stream 挂在 LLMClient 上，
+        # 拿不到 InterviewAgent 的 resume 字段。
+        has_resume = "用简历的规则" in system
         if "收尾" in directive:
             line = MOCK_CLOSE
+        # 简历开场要排在「追问」前面：开场指令里有“最值得追问的项目”，
+        # 先匹配追问就会把开场演成一次追问（实测踩到：开场问了句“有数据吗”）
+        elif has_resume and "第 1 个话题" in directive:
+            line = MOCK_OPEN_RESUME
         elif "追问" in directive:
             if kw:
                 line = MOCK_PROBES_ECHO[(qidx + len(user_msgs)) % len(MOCK_PROBES_ECHO)].format(kw=kw)
@@ -541,7 +551,7 @@ class InterviewAgent:
 
     def __init__(self, cfg: dict, session_id: str, role_key: str = "ai_pm",
                  max_questions: int | None = None, llm: LLMClient | None = None,
-                 level: str = "normal"):
+                 level: str = "normal", resume_text: str = "", resume_name: str = ""):
         self.cfg = cfg
         self.session_id = session_id
         self.role_key = role_key if role_key in (cfg.get("roles") or {}) else "general"
@@ -550,6 +560,14 @@ class InterviewAgent:
         self.llm = llm or LLMClient(cfg)
         self.level_key = level if level in (cfg.get("levels") or {}) else "normal"
         self.level = level_cfg(cfg, self.level_key)
+
+        # 简历模式：只把前 N 字喂给模型，避免长简历吃掉对话预算。
+        # 原文不落盘（session.json 只记文件名和字数）——简历是个人信息，
+        # 落盘的东西有可能被截图、被同步、被上传。
+        self.resume = (resume_text or "").strip()
+        self.resume_name = (resume_name or "").strip()
+        self.resume_limit = int((cfg.get("resume") or {}).get("max_chars", 1800))
+        self.resume_used = self.resume[: self.resume_limit]
 
         self.history = []            # 给模型的消息（assistant / user）
         self.turns = []              # 每轮判定记录
@@ -574,10 +592,24 @@ class InterviewAgent:
     # -- 提示词 ------------------------------------------------------
     def system_prompt(self) -> str:
         depth = self.level.get("ask_note", "")
+        resume_block = ""
+        if self.resume_used:
+            resume_block = (
+                "\n候选人的简历（原文节选，只给你出题和追问用，不要照读）：\n"
+                "<<<\n"
+                f"{self.resume_used}\n"
+                ">>>\n"
+                "用简历的规则：\n"
+                "8. 第 1 个话题必须从简历里挑一个最值得追问的项目或经历，不要问泛泛的自我介绍。\n"
+                "9. 追问可以引用简历里的项目名、指标、时间，逼他把简历上的说法讲具体。\n"
+                "10. 简历没写的不要编；写了但含糊的地方，优先追问。\n"
+                "11. 不评价简历写得好不好，也不逐条念简历。\n"
+            )
         return (
             f"你是一场「{self.role_name}」岗位的模拟面试官，正在和候选人做语音面试。\n"
             f"本次共 {self.max_questions} 个话题，现在是第 {max(1, self.question_index)} 个。\n"
             + (f"本场难度：{depth}\n" if depth else "")
+            + resume_block
             + "说话规则：\n"
             "1. 每次只说一句话：一个提问，或一句追问。不寒暄、不点评、不一次问两件事。\n"
             "2. 口语、短句，20–45 字。不用列表、不用 markdown、不用括号补充。\n"
@@ -662,10 +694,15 @@ class InterviewAgent:
         turn_id = self.turn_seq
         emit({
             "t": "meta", "turn": turn_id, "action": ASK, "label": LABEL[ASK],
-            "reason": "开场第 1 个话题", "question": self.question_index,
+            "reason": "开场第 1 个话题（按简历）" if self.resume_used else "开场第 1 个话题",
+            "question": self.question_index,
             "max_question": self.max_questions, "role": self.role_name,
         })
-        text = self._generate(emit, f"面试开始。请直接提出第 1 个话题，一句话。", max_tokens=120)
+        if self.resume_used:
+            directive = "面试开始。先从简历里挑一个最值得追问的项目，直接提出第 1 个话题，一句话。"
+        else:
+            directive = "面试开始。请直接提出第 1 个话题，一句话。"
+        text = self._generate(emit, directive, max_tokens=120)
         self.history.append({"role": "assistant", "content": text})
         self.turns.append({
             "turn": turn_id, "role": "agent", "text": text, "action": ASK,
@@ -1196,6 +1233,13 @@ class InterviewAgent:
             "timings": self.timings,
             "usage": self.usage,
             "metrics": self.metrics(),
+            # 只记模式、文件名、字数——简历原文不进磁盘
+            "resume": {
+                "mode": "resume" if self.resume_used else "role",
+                "name": self.resume_name,
+                "chars": len(self.resume),
+                "in_prompt_chars": len(self.resume_used),
+            },
         }
 
     def save(self, runs_dir: Path, report: dict | None = None) -> Path:

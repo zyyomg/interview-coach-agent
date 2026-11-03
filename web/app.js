@@ -11,9 +11,18 @@
   const pauseBtn = $('pauseBtn');
   const startBtn = $('startBtn');
   const tipbar = $('tipbar');
+  const resumeSwitch = $('resumeSwitch');
+  const resumeBox = $('resumeBox');
+  const resumeFile = $('resumeFile');
+  const resumePaste = $('resumePaste');
+  const resumeMeta = $('resumeMeta');
+  const resumeHint = $('resumeHint');
 
   const S = {
     session: null,
+    resumeOn: false,      // 按简历面试的开关
+    resumeText: '',       // 解析/粘贴出来的简历正文
+    resumeName: '',
     role: 'ai_pm',
     rounds: 8,
     level: 'normal',      // easy / normal / hard：只影响判定阈值和提问深度
@@ -854,8 +863,72 @@
 
   /* ------------------------------------------------------------ 主流程 */
 
+  // ---- 简历模式 ----
+  function setResumeMeta(text, cls) {
+    resumeMeta.textContent = text;
+    resumeMeta.className = 'resume-meta' + (cls ? ' ' + cls : '');
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result || '').split(',')[1] || '');
+      r.onerror = () => reject(r.error || new Error('read error'));
+      r.readAsDataURL(file);
+    });
+  }
+
+  function pickResume(file) {
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      setResumeMeta('文件超过 4MB，简历不该这么大——检查一下是不是选错了。', 'bad');
+      return;
+    }
+    setResumeMeta('正在读取…');
+    fileToBase64(file).then(async (b64) => {
+      try {
+        const res = await fetch('/api/resume/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, data: b64 }),
+        });
+        const d = await res.json();
+        if (!d.ok) {
+          setResumeMeta(d.hint || '读不出来', 'bad');
+          tip(d.hint || '简历读取失败');
+          return;
+        }
+        S.resumeText = d.text || '';
+        S.resumeName = d.name || file.name;
+        resumePaste.value = S.resumeText;
+        setResumeMeta(`已读 ${S.resumeName} · ${d.chars} 字 · 只在本机解析，原文不进会话记录`, 'ok');
+      } catch (e) {
+        setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad');
+      }
+    }).catch(() => setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad'));
+  }
+
+  function toggleResume() {
+    S.resumeOn = !resumeSwitch.classList.contains('on');
+    resumeSwitch.classList.toggle('on', S.resumeOn);
+    resumeBox.hidden = !S.resumeOn;
+    resumeHint.textContent = S.resumeOn ? '按你上传的简历提问' : '默认：按岗位通用提问';
+    if (S.resumeOn && !S.resumeText) {
+      setTimeout(() => { try { resumePaste.focus(); } catch (e) {} }, 60);
+    }
+  }
+
   async function startSession() {
     if (S.busy) return;
+    if (S.resumeOn) {
+      const text = (resumePaste.value || '').trim();
+      if (text.length < 60) {
+        tip('简历内容太短，像是没读到。换个文件，或把文字粘到下面；也可以关掉「按简历面试」。');
+        return;
+      }
+      S.resumeText = text;
+      S.resumeName = S.resumeName || '粘贴的简历';
+    }
     S.busy = true;
     startBtn.disabled = true;
     startBtn.textContent = '准备中…';
@@ -896,11 +969,16 @@
     S.lastVoiceAt = 0;
 
     try {
-      await stream('/api/session/start', { role: S.role, rounds: S.rounds, level: S.level }, (ev) => {
+      await stream('/api/session/start', {
+        role: S.role, rounds: S.rounds, level: S.level,
+        resume_text: S.resumeOn ? S.resumeText : '',
+        resume_name: S.resumeOn ? S.resumeName : '',
+      }, (ev) => {
         if (ev.t === 'session') {
           S.session = ev.id;
           S.mock = ev.mode === 'mock';
           S.stats.maxQ = ev.max_question;
+          S.resumeMode = !!ev.resume;
           input.disabled = false;        // 开了局就能打字，不用先关麦克风
           paintStats();
           paintMic();
@@ -909,7 +987,9 @@
           if (S.voice) startRec();
           tip(S.mock
             ? '演示模式：没有检测到模型 Key，面试官由本地脚本扮演。配好 <b>DEEPSEEK_API_KEY</b> 后重启即可换成真模型。'
-            : `真实模型 · ${S.rounds} 个话题 · 一场约 ¥0.03`);
+            : (S.resumeMode
+              ? `简历模式 · 已读 ${ev.resume_chars} 字 · 面试官会从简历里挑项目提问`
+              : `真实模型 · ${S.rounds} 个话题 · 一场约 ¥0.03`));
         } else {
           handleEvent(ev);
         }
@@ -1329,6 +1409,19 @@
 
   startBtn.addEventListener('click', startSession);
   endBtn.addEventListener('click', endEarly);
+
+  resumeSwitch.addEventListener('click', toggleResume);
+  resumeFile.addEventListener('change', (e) => pickResume(e.target.files && e.target.files[0]));
+  resumePaste.addEventListener('input', () => {
+    S.resumeText = (resumePaste.value || '').trim();
+    if (S.resumeText) {
+      if (!S.resumeName) S.resumeName = '粘贴的简历';
+      setResumeMeta(`${S.resumeText.length} 字 · 只在本机解析，原文不进会话记录`, 'ok');
+    } else {
+      S.resumeName = '';
+      setResumeMeta('还没读到内容', '');
+    }
+  });
 
   sendBtn.addEventListener('click', () => {
     const v = input.value.trim();

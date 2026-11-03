@@ -41,6 +41,21 @@
         <button data-v="hard">困难</button>
       </div>
 
+      <div class="lab">面试方式</div>
+      <div class="row">
+        <button class="switch" id="resumeSwitch" aria-label="按简历面试"><span></span></button>
+        <span class="hint2" id="resumeHint">默认：按岗位通用提问</span>
+      </div>
+      <div class="resume-box" id="resumeBox" hidden>
+        <label class="resume-drop" id="resumeDrop">
+          <input type="file" id="resumeFile" accept=".docx,.txt,.md" hidden>
+          <b>选简历文件</b>
+          <span>.docx / .txt / .md　PDF 请先另存为 .docx</span>
+        </label>
+        <textarea id="resumePaste" rows="4" placeholder="也可以把简历正文粘贴到这里……"></textarea>
+        <div class="resume-meta" id="resumeMeta">还没读到内容</div>
+      </div>
+
       <div class="lab">语音</div>
       <div class="row">
         <button class="switch on" id="voiceSwitch" aria-label="语音开关"><span></span></button>

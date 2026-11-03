@@ -5,12 +5,13 @@
     python selftest.py              # 规则单测 + 10 场模拟 + HTTP 端到端 + 接口契约 + 兜底
     python selftest.py --sessions 3 # 少跑几场
 
-五件事：
+六件事：
 1. 判定规则单测：四种动作各自该在什么输入上触发
 2. 模拟 10 场：脚本候选人跑完整流程，看状态机有没有走飞
 3. HTTP 冒烟：起真服务，用 ndjson 流跑一遍，确认前后端契约对得上
 4. 模型接口契约：本地桩模拟 DeepSeek 的 SSE，验流式解析与计价
 5. 兜底路径：接口报错 / 模型返回空时，气泡不能是空的（这个 bug 复发过三次）
+6. 简历模式：docx 解析、简历进提示词、开场换指令、关掉能回退
 
 注意：这里用的是演示模型（本地脚本），**不是**真实评测。
 延迟和成本是链路证据，不是产品指标；真实数据要接上 Key 自己跑（见 README）。
@@ -369,7 +370,70 @@ def run_fallbacks(cfg) -> dict:
     return {"rows": rows, "ok": all(r["ok"] for r in rows)}
 
 
-def render(rules, sessions, http, live, fb, cfg) -> str:
+def run_resume(cfg) -> dict:
+    """简历模式：三个环节都要对——解析出来、进得了提示词、开场换指令。
+
+    不联网：docx 用 zipfile 现场造一个，模型用演示模式。
+    """
+    import io
+    import zipfile
+
+    import server as S
+
+    rows = []
+    xml = (
+        '<?xml version="1.0"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+        "<w:p><w:r><w:t>张三 · AI 产品经理</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>项目：面试陪练 Agent，日活 400，单场成本 0.0068 元。</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("word/document.xml", xml)
+    r = S.parse_resume("测试.docx", buf.getvalue())
+    rows.append({
+        "note": ".docx 能抽出正文",
+        "ok": bool(r.get("ok")) and "面试陪练" in (r.get("text") or ""),
+        "detail": f"{r.get('chars', 0)} 字" if r.get("ok") else str(r.get("hint", ""))[:24],
+    })
+
+    pdf = S.parse_resume("测试.pdf", b"%PDF-1.4")
+    rows.append({
+        "note": "PDF 不硬解析，给明确出路",
+        "ok": (not pdf.get("ok")) and "docx" in str(pdf.get("hint", "")),
+        "detail": str(pdf.get("hint", ""))[:22],
+    })
+
+    text = "张三，做过面试陪练 Agent，日活 400。"
+    ag = A.InterviewAgent(cfg, "resume-test", "ai_pm", 6, A.LLMClient(cfg, force_mock=True),
+                          resume_text=text, resume_name="测试.docx")
+    prompt = ag.system_prompt()
+    rows.append({
+        "note": "简历进系统提示词",
+        "ok": text in prompt and "用简历的规则" in prompt,
+        "detail": f"{len(prompt)} 字",
+    })
+
+    evs = []
+    ag.begin(lambda e: evs.append(e))
+    opening = "".join(e.get("d", "") for e in evs if e.get("t") == "tok")
+    rows.append({
+        "note": "开场改成按简历挑项目",
+        "ok": "简历" in opening and "自我介绍" not in opening,
+        "detail": opening[:26],
+    })
+
+    ag2 = A.InterviewAgent(cfg, "resume-test-2", "ai_pm", 6, A.LLMClient(cfg, force_mock=True))
+    rows.append({
+        "note": "关掉开关就回通用开场",
+        "ok": "用简历的规则" not in ag2.system_prompt(),
+        "detail": "无简历时不注入",
+    })
+    return {"ok": all(x["ok"] for x in rows), "rows": rows}
+
+
+def render(rules, sessions, http, live, fb, resume, cfg) -> str:
     passed_rules = sum(1 for r in rules if r["ok"])
     passed_sess = sum(1 for s in sessions if s["ok"])
     total_cost = sum(s["cost"] for s in sessions)
@@ -467,7 +531,21 @@ def render(rules, sessions, http, live, fb, cfg) -> str:
 
     lines += [
         "",
-        "## 六、这次没证明的事",
+        "## 六、简历模式（解析 / 提示词 / 开场）",
+        f"结果：**{sum(1 for r in resume['rows'] if r['ok'])} / {len(resume['rows'])} 通过**",
+        "",
+        "简历是可选输入：关掉就按岗位通用提问，打开才把正文注入提示词。",
+        "PDF 不做硬解析——中文 PDF 要字体映射表，标准库做不到，接第三方库又违背零依赖，所以直接给出路。",
+        "",
+        "| 检查项 | 结果 | 细节 |",
+        "|---|---|---|",
+    ]
+    for r in resume["rows"]:
+        lines.append(f"| {r['note']} | {'✅' if r['ok'] else '❌'} | {r['detail']} |")
+
+    lines += [
+        "",
+        "## 七、这次没证明的事",
         "",
         "- 真实模型的回复质量（演示模型是脚本，看不出模型水平）",
         "- 真实延迟（首字 / 首音要靠浏览器实测，见界面 HUD）",
@@ -497,12 +575,12 @@ def main():
     cfg = A.load_config()
     EVAL.mkdir(exist_ok=True)
 
-    print("1/5 判定规则单测 …")
+    print("1/6 判定规则单测 …")
     rules = run_rules(cfg)
     for r in rules:
         print(f"   {'OK  ' if r['ok'] else 'FAIL'} {r['note']}: {A.LABEL.get(r['got'])} — {r['reason']}")
 
-    print(f"2/5 模拟 {args.sessions} 场会话 …")
+    print(f"2/6 模拟 {args.sessions} 场会话 …")
     sessions = []
     personas = list(PERSONAS)
     for i in range(args.sessions):
@@ -516,23 +594,28 @@ def main():
 
     http = {"ok": False, "error": "skipped"}
     if not args.no_http:
-        print("3/5 HTTP 端到端 …")
+        print("3/6 HTTP 端到端 …")
         http = run_http(cfg)
         print(f"   {'OK' if http['ok'] else 'FAIL'} 事件 {http.get('events')} 个，"
               f"复盘分数 {http.get('score')}，{http.get('error', '')}")
 
-    print("4/5 模型接口契约（本地桩）…")
+    print("4/6 模型接口契约（本地桩）…")
     live = run_live_stub(cfg)
     print(f"   {'OK' if live['ok'] else 'FAIL'} 模式 {live.get('mode')}，"
           f"缓存 {live.get('hit')}/{live.get('miss')}/{live.get('out')}，"
           f"¥{live.get('cost', 0):.4f}，{live.get('error', '')}")
 
-    print("5/5 兜底路径（接口出错 / 模型返回空）…")
+    print("5/6 兜底路径（接口出错 / 模型返回空）…")
     fb = run_fallbacks(cfg)
     for r in fb["rows"]:
         print(f"   {'OK  ' if r['ok'] else 'FAIL'} {r['note']}：气泡「{r['bubble']}」kind={r['kind']}")
 
-    md = render(rules, sessions, http, live, fb, cfg)
+    print("6/6 简历模式（解析 / 提示词 / 开场）…")
+    resume = run_resume(cfg)
+    for r in resume["rows"]:
+        print(f"   {'OK  ' if r['ok'] else 'FAIL'} {r['note']}：{r['detail']}")
+
+    md = render(rules, sessions, http, live, fb, resume, cfg)
     out = EVAL / f"自测-{time.strftime('%Y%m%d-%H%M')}.md"
     out.write_text(md, encoding="utf-8")
 
@@ -541,14 +624,16 @@ def main():
     ok_http = http.get("ok") or args.no_http
     ok_live = live.get("ok")
     ok_fb = fb["ok"]
+    ok_resume = resume["ok"]
     print()
     print(f"规则 {sum(1 for r in rules if r['ok'])}/{len(rules)}　"
           f"会话 {sum(1 for s in sessions if s['ok'])}/{len(sessions)}　"
           f"HTTP {'skipped' if args.no_http else ('OK' if http.get('ok') else 'FAIL')}　"
           f"接口 {'OK' if ok_live else 'FAIL'}　"
-          f"兜底 {sum(1 for r in fb['rows'] if r['ok'])}/{len(fb['rows'])}")
+          f"兜底 {sum(1 for r in fb['rows'] if r['ok'])}/{len(fb['rows'])}　"
+          f"简历 {sum(1 for r in resume['rows'] if r['ok'])}/{len(resume['rows'])}")
     print(f"报告：{out}")
-    return 0 if (ok_rules and ok_sess and ok_http and ok_live and ok_fb) else 1
+    return 0 if (ok_rules and ok_sess and ok_http and ok_live and ok_fb and ok_resume) else 1
 
 
 if __name__ == "__main__":

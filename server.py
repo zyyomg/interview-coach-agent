@@ -19,9 +19,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import mimetypes
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -29,9 +32,11 @@ import threading
 import time
 import uuid
 import webbrowser
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from xml.etree import ElementTree as ET
 
 import agent as A
 
@@ -44,16 +49,98 @@ LOCK = threading.Lock()
 STATE = {"mock": False}
 VERSION = "0.1"
 
+RESUME_MAX_BYTES = 5 * 1024 * 1024        # 简历文件上限，超过就不是简历了
+RESUME_MAX_CHARS = 20000                 # 解析后保留的字数，防粘贴一整本书
+
+
+def _clean_resume(text: str) -> str:
+    """把解析出来的简历压干净：去零宽字符、压掉多余空行、限制长度。"""
+    t = (text or "").replace("\u200b", "").replace("\ufeff", "").replace("\xa0", " ")
+    t = re.sub(r"[ \t]+\n", "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip()[:RESUME_MAX_CHARS]
+
+
+def _decode_text(raw: bytes) -> str:
+    """中文简历常见的几种编码都试一遍。Word 存出来的 txt 常是 GBK。"""
+    for enc in ("utf-8-sig", "utf-8", "gb18030", "big5"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "ignore")
+
+
+def _docx_text(raw: bytes) -> str:
+    """.docx 就是一个 zip：读 word/document.xml，按段落抽 <w:t> 的文字。
+
+    只用标准库（zipfile + ElementTree）。表格里的段落也能抽到，
+    因为 w:p 在 w:tbl 里同样是 w:p。
+    """
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        xml = z.read("word/document.xml")
+    root = ET.fromstring(xml)
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    lines = []
+    for p in root.iter(ns + "p"):
+        buf = []
+        for node in p.iter():
+            if node.tag == ns + "t" and node.text:
+                buf.append(node.text)
+            elif node.tag == ns + "tab":
+                buf.append(" ")
+            elif node.tag == ns + "br":
+                buf.append("\n")
+        line = "".join(buf).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def parse_resume(name: str, raw: bytes) -> dict:
+    """解析简历文件。返回 {ok, text, chars} 或 {ok: False, kind, hint}。
+
+    PDF 不支持——解析中文 PDF 要字体映射表，标准库做不到；
+    引第三方库又违背「零依赖」。所以直接给两条出路，而不是解析出乱码。
+    """
+    ext = (name.rsplit(".", 1)[-1] if "." in name else "").lower()
+    if ext == "pdf":
+        return {
+            "ok": False, "kind": "pdf",
+            "hint": "PDF 读不了文字层。用 Word/WPS 打开后「另存为 .docx」，或把文字直接粘到下面。",
+        }
+    if ext not in ("docx", "txt", "md", "markdown"):
+        return {
+            "ok": False, "kind": "type",
+            "hint": "支持 .docx / .txt / .md。PDF 请先另存为 .docx，或直接粘贴文字。",
+        }
+    try:
+        text = _docx_text(raw) if ext == "docx" else _decode_text(raw)
+    except (zipfile.BadZipFile, KeyError, ET.ParseError):
+        return {
+            "ok": False, "kind": "broken",
+            "hint": "这个文件打不开。如果是扫描件或加密文档，请把文字复制出来粘贴。",
+        }
+    text = _clean_resume(text)
+    if len(text) < 40:
+        return {
+            "ok": False, "kind": "empty",
+            "hint": "只读到几十个字，可能是图片型简历。把文字复制出来粘贴到下面更稳。",
+        }
+    return {"ok": True, "text": text, "chars": len(text), "name": name}
+
 
 class Session:
-    def __init__(self, role: str, rounds: int, level: str = "normal"):
+    def __init__(self, role: str, rounds: int, level: str = "normal",
+                 resume_text: str = "", resume_name: str = ""):
         self.id = uuid.uuid4().hex[:12]
         self.lock = threading.Lock()
         self.created = time.time()
         self.agent = A.InterviewAgent(
             CONFIG, self.id, role, rounds,
             A.LLMClient(CONFIG, force_mock=STATE["mock"]),
-            level=level,
+            level=level, resume_text=resume_text, resume_name=resume_name,
         )
 
     def save(self, report: dict | None = None) -> str:
@@ -164,12 +251,17 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         body = self._body()
 
+        if path == "/api/resume/parse":
+            return self._resume(body)
+
         if path == "/api/session/start":
             role = str(body.get("role") or "ai_pm")
             rounds = int(body.get("rounds") or CONFIG.get("max_questions", 8))
             rounds = max(4, min(20, rounds))
             level = str(body.get("level") or CONFIG.get("level") or "normal")
-            return self._start(role, rounds, level)
+            resume_text = str(body.get("resume_text") or "").strip()[:RESUME_MAX_CHARS]
+            resume_name = str(body.get("resume_name") or "").strip()[:120]
+            return self._start(role, rounds, level, resume_text, resume_name)
 
         if path == "/api/turn":
             return self._turn(body)
@@ -231,8 +323,27 @@ class Handler(BaseHTTPRequestHandler):
 
         return emit
 
-    def _start(self, role: str, rounds: int, level: str = "normal"):
-        sess = Session(role, rounds, level)
+    def _resume(self, body: dict):
+        """解析简历。文件以 base64 传上来——不引 multipart 解析库，也不落盘。"""
+        name = str(body.get("name") or "resume")
+        data = str(body.get("data") or "")
+        if not data:
+            return self._json({"ok": False, "kind": "empty", "hint": "没有收到文件内容"}, 400)
+        try:
+            raw = base64.b64decode(data.split(",")[-1], validate=False)
+        except Exception:
+            return self._json({"ok": False, "kind": "broken", "hint": "文件读取失败，换一个再试"}, 400)
+        if len(raw) > RESUME_MAX_BYTES:
+            return self._json({
+                "ok": False, "kind": "big",
+                "hint": f"文件超过 {RESUME_MAX_BYTES // 1024 // 1024}MB。简历不该这么大，检查一下是不是选错文件了。",
+            }, 400)
+        out = parse_resume(name, raw)
+        return self._json(out, 200 if out.get("ok") else 400)
+
+    def _start(self, role: str, rounds: int, level: str = "normal",
+               resume_text: str = "", resume_name: str = ""):
+        sess = Session(role, rounds, level, resume_text, resume_name)
         with LOCK:
             SESSIONS[sess.id] = sess
         self._open_stream()
@@ -240,7 +351,9 @@ class Handler(BaseHTTPRequestHandler):
         emit({"t": "session", "id": sess.id, "role": sess.agent.role_key,
               "role_name": sess.agent.role_name, "max_question": sess.agent.max_questions,
               "level": sess.agent.level_key, "level_name": sess.agent.level.get("name", "标准"),
-              "mode": sess.agent.llm.mode})
+              "mode": sess.agent.llm.mode,
+              "resume": bool(sess.agent.resume_used),
+              "resume_chars": len(sess.agent.resume_used)})
         with sess.lock:
             sess.agent.begin(emit)
         sess.save()
