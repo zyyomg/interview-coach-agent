@@ -1507,7 +1507,14 @@
     // 直接走重连（内部会解除暂停），而不是默默什么都不做。
     if (S.paused || S.asrDown) { retryAsr(); return; }
     if (S.speaking) { interruptNow(''); return; }   // 它在说：照旧打断，但不算一次"插话"
-    if (S.listening) { stopRec(); setStatus('麦克风关了 · 可以打字', ''); refreshStatus(); return; }
+    if (S.listening) {
+      // 开着麦却连续 5 秒一个识别事件都没有 = 引擎假活（心跳每 12 秒才救一次，
+      // 用户等不了）。这时候点麦克风的意思是"我还要接着说"，不是"关掉"——
+      // 直接换个新识别器，别让第一下变成关麦、白点一次。
+      // 已经识别到的半句不清（retryAsr 不动 finalText）。
+      if (performance.now() - (S.lastAsrAt || 0) > 5000) { retryAsr(); return; }
+      stopRec(); setStatus('麦克风关了 · 可以打字', ''); refreshStatus(); return;
+    }
     if (S.finalText.trim()) { commitSpeech(); return; }
     startRec();
   });
