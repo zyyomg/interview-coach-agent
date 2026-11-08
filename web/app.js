@@ -17,17 +17,21 @@
   const resumeMeta = $('resumeMeta');
   const roleInput = $('roleInput');
   const roleSeg = $('roleSeg');
+  const roleHistBtn = $('roleHistBtn');
+  const roleHist = $('roleHist');
   const formHint = $('formHint');
 
-  // 预设岗位的显示名，只用于界面文案（服务端那份在 config.json 的 roles 里）
+  // 岗位只有两档：手写（优先）+ 通用。预设列表永远不全，写进去的那句才是准的。
   const ROLE_LABEL = { ai_pm: 'AI 产品经理', pm: '产品经理', general: '通用岗位' };
+  const ROLE_HIST_KEY = 'interview.roleHistory';
+  const ROLE_HIST_MAX = 8;
 
   const S = {
     session: null,
     form: 'casual',       // casual 体验式（不带简历）/ formal 正式（必须带简历）
     resumeText: '',       // 解析/粘贴出来的简历正文
     resumeName: '',
-    role: 'ai_pm',        // 预设岗位 key
+    role: 'general',      // 只有一个预设：通用
     roleTitle: '',        // 自己写的岗位名；有值时优先于 role
     rounds: 8,
     level: 'normal',      // easy / normal / hard：只影响判定阈值和提问深度
@@ -912,6 +916,7 @@
         S.resumeText = d.text || '';
         S.resumeName = d.name || file.name;
         resumePaste.value = S.resumeText;
+        try { resumePaste.scrollTop = 0; } catch (e) {}   // 让用户先看到开头，不是结尾
         setResumeMeta(`已读 ${S.resumeName} · ${d.chars} 字 · 不写入会话记录；提问时会随提示词发给模型`, 'ok');
       } catch (e) {
         setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad');
@@ -928,6 +933,75 @@
     const el = $('emptyRole');
     if (el) el.textContent = roleLabel();
     roleInput.classList.toggle('on', !!S.roleTitle);
+    // 只留一个「通用岗位」：写了岗位它就该灭，删空了再亮回来
+    roleSeg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', !S.roleTitle));
+  }
+
+  /* ---- 历史岗位：写过的不用再写一遍 ---- */
+
+  function readRoleHistory() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(ROLE_HIST_KEY) || '[]');
+      if (!Array.isArray(arr)) return [];
+      return arr.filter((x) => typeof x === 'string' && x.trim()).slice(0, ROLE_HIST_MAX);
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function writeRoleHistory(list) {
+    try { localStorage.setItem(ROLE_HIST_KEY, JSON.stringify(list.slice(0, ROLE_HIST_MAX))); } catch (e) {}
+  }
+
+  // 只在真的开了一场之后记，避免把打错一半的字也存进去
+  function rememberRole(name) {
+    const n = (name || '').trim().slice(0, 16);
+    if (!n || n === ROLE_LABEL.general) return;   // 通用一直都在，占位置没意义
+    const list = [n, ...readRoleHistory().filter((x) => x.toLowerCase() !== n.toLowerCase())];
+    writeRoleHistory(list);
+    paintRoleHistory();
+  }
+
+  function paintRoleHistory() {
+    const list = readRoleHistory();
+    roleHist.textContent = '';
+    roleHistBtn.hidden = list.length === 0;      // 没历史就不摆一个死按钮
+    roleHistBtn.textContent = `历史 ${list.length}`;
+    if (!list.length) {
+      const s = document.createElement('span');
+      s.className = 'none';
+      s.textContent = '开过一场之后，写过的岗位会记在这里';
+      roleHist.appendChild(s);
+      return;
+    }
+    list.forEach((name) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = name;
+      b.title = name;
+      b.addEventListener('click', () => {
+        roleInput.value = name;
+        S.roleTitle = name;
+        paintRole();
+        toggleRoleHistory(false);
+      });
+      roleHist.appendChild(b);
+    });
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'clear';
+    clear.textContent = '清空';
+    clear.addEventListener('click', () => {
+      writeRoleHistory([]);
+      paintRoleHistory();
+    });
+    roleHist.appendChild(clear);
+  }
+
+  function toggleRoleHistory(show) {
+    const next = show === undefined ? roleHist.hidden : show;
+    roleHist.hidden = !next;
+    roleHistBtn.classList.toggle('on', next);
   }
 
   // 体验式 / 正式：只有正式才展开简历区。
@@ -1002,6 +1076,7 @@
       }, (ev) => {
         if (ev.t === 'session') {
           S.session = ev.id;
+          rememberRole(S.roleTitle);      // 真开了一场才记，打错一半的字不留
           S.mock = ev.mode === 'mock';
           S.stats.maxQ = ev.max_question;
           S.resumeMode = !!ev.resume;
@@ -1411,14 +1486,6 @@
       seg.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
       btn.classList.add('on');
       seg.dataset.value = btn.dataset.v;
-      if (seg.id === 'roleSeg') {
-        // 选预设就把自己写的清掉：两个只能有一个生效，
-        // 否则会出现「按钮亮着 AI 产品经理、实际按输入框那个岗在问」
-        S.role = btn.dataset.v;
-        S.roleTitle = '';
-        roleInput.value = '';
-        paintRole();
-      }
       if (seg.id === 'roundSeg') S.rounds = parseInt(btn.dataset.v, 10);
       if (seg.id === 'levelSeg') S.level = btn.dataset.v;
       if (seg.id === 'formSeg') {
@@ -1428,18 +1495,39 @@
     });
   });
 
-  // 自己写岗位：预设不够用时兜底。一打字就取消预设高亮，清空则退回上次选的预设。
+  // 「通用岗位」是唯一剩下的预设：点它就把手写的清掉，退回通用题
+  roleSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-v]');
+    if (!btn) return;
+    S.role = btn.dataset.v;
+    S.roleTitle = '';
+    roleInput.value = '';
+    paintRole();
+  });
+
+  // 自己写岗位：写什么就按什么问。一打字「通用」就灭，删空再亮回来。
   roleInput.addEventListener('input', () => {
     S.roleTitle = roleInput.value.trim();
-    if (S.roleTitle) {
-      roleSeg.querySelectorAll('button').forEach((b) => b.classList.remove('on'));
-      roleSeg.dataset.value = '';
-    } else {
-      const cur = roleSeg.querySelector(`button[data-v="${S.role}"]`);
-      if (cur) cur.classList.add('on');
-      roleSeg.dataset.value = S.role;
-    }
     paintRole();
+    if (S.roleTitle) toggleRoleHistory(false);
+  });
+
+  roleInput.addEventListener('focus', () => {
+    if (readRoleHistory().length) toggleRoleHistory(true);
+  });
+
+  roleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') toggleRoleHistory(false);
+    if (e.key === 'Enter') { toggleRoleHistory(false); startBtn.click(); }
+  });
+
+  roleHistBtn.addEventListener('click', () => toggleRoleHistory());
+
+  // 点到别处就收起，别占着侧栏
+  document.addEventListener('click', (e) => {
+    if (roleHist.hidden) return;
+    if (roleHist.contains(e.target) || roleHistBtn.contains(e.target) || roleInput.contains(e.target)) return;
+    toggleRoleHistory(false);
   });
 
   $('voiceSwitch').addEventListener('click', () => {
@@ -1757,6 +1845,7 @@
   paintSpend();
   loadSpend();
   loadHistory();
-  paintRole();      // 空状态标题跟着岗位走，选了「数据分析师」就显示它
-  applyForm();      // 体验式默认不展开简历区
+  paintRole();       // 空状态标题跟着岗位走，选了「数据分析师」就显示它
+  paintRoleHistory();
+  applyForm();       // 体验式默认不展开简历区
 })();

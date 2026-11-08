@@ -130,7 +130,8 @@ h1, h2, h3, h4, p { margin: 0; }
 #formHint { margin-top: 7px; }
 #formHint.on { color: var(--accent); }
 
-/* 自己写岗位：预设三个不够用时兜底，留空就还用预设 */
+/* 自己写岗位：想面什么岗就写什么，写不出来的先用「通用岗位」 */
+.role-line { display: flex; align-items: center; gap: 6px; }
 .txt {
   width: 100%; margin-top: 6px;
   border: 1px solid var(--line); border-radius: 9px;
@@ -138,9 +139,46 @@ h1, h2, h3, h4, p { margin: 0; }
   color: var(--ink); background: #fff;
   transition: border-color .15s, box-shadow .15s;
 }
+.role-line .txt { margin-top: 0; flex: 1 1 auto; min-width: 0; }
 .txt::placeholder { color: var(--ink3); }
 .txt:focus { outline: none; border-color: #c3cfe8; box-shadow: 0 0 0 3px rgba(43, 85, 214, .08); }
 .txt.on { border-color: #c5d2f8; background: var(--accent-soft); }
+
+/* 历史岗位：写过的不用再写一遍 */
+.mini {
+  flex: none; height: 33px; padding: 0 9px; border-radius: 9px;
+  border: 1px solid var(--line); background: #fff; color: var(--ink2);
+  font-family: inherit; font-size: 11.5px; cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.mini:hover { border-color: #c9d2e6; color: var(--ink); }
+.mini.on { background: var(--accent-soft); border-color: #c5d2f8; color: var(--accent); }
+.role-hist {
+  margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px;
+  padding: 8px 9px; border: 1px solid var(--line); border-radius: 9px; background: #fafbfd;
+}
+.role-hist[hidden] { display: none; }   /* display:flex 会盖掉 [hidden] 的默认值 */
+.role-hist .none { font-size: 11px; color: var(--ink3); }
+.role-hist button {
+  border: 1px solid #e2e8f2; background: #fff; color: var(--ink2);
+  border-radius: 999px; padding: 3px 9px; font-family: inherit;
+  font-size: 11.5px; cursor: pointer; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.role-hist button:hover { border-color: #c5d2f8; color: var(--accent); background: var(--accent-soft); }
+.role-hist .clear {
+  border: 0; background: none; color: var(--ink3); font-size: 11px; padding: 3px 2px;
+}
+.role-hist .clear:hover { color: #c0392b; background: none; }
+
+.role-chips { margin-top: 7px; display: flex; gap: 6px; }
+.chip {
+  border: 1px solid var(--line); background: #fff; color: var(--ink2);
+  border-radius: 999px; padding: 5px 12px; font-family: inherit;
+  font-size: 12px; cursor: pointer; transition: .15s;
+}
+.chip:hover { border-color: #c9d2e6; color: var(--ink); }
+.chip.on { background: var(--accent-soft); border-color: #c5d2f8; color: var(--accent); font-weight: 600; }
 
 /* 简历模式：关着时完全不占位置，打开才展开上传区 */
 .resume-box { margin-top: 8px; }

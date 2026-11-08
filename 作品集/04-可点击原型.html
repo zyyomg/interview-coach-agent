@@ -73,6 +73,13 @@
     border:1px dashed var(--line2); background:#fbfaf8; color:var(--ink3); margin-bottom:16px;
   }
   .inp.focus{border:1px solid var(--acc); background:var(--acc-soft); color:var(--acc)}
+  .roleline{display:flex; gap:6px; margin-bottom:8px}
+  .roleline .inp{margin-bottom:0; flex:1; min-width:0}
+  .hist{display:flex; gap:6px; flex-wrap:wrap; padding:8px; border:1px solid var(--line2);
+    border-radius:9px; background:#faf9f6; margin-bottom:8px}
+  .hist[hidden]{display:none}
+  .chip.hist{padding:7px 10px; color:var(--acc); border-color:var(--acc-soft); background:var(--acc-soft)}
+  .chip.hist.on{background:var(--acc); color:#fff}
   .start{
     width:100%; margin-top:8px; padding:13px; border:0; border-radius:11px;
     background:var(--ink); color:#fff; font-size:14px; font-weight:600; cursor:pointer;
@@ -159,17 +166,22 @@
     <div class="bar"><div class="t">面试陪练</div><div class="s">真实模型 · deepseek-flash</div></div>
     <div class="body">
       <div class="hero">
-        <h2 id="heroTitle">AI 产品经理，直接开口。</h2>
+        <h2 id="heroTitle">通用岗位，直接开口。</h2>
         <p>一次只问一个问题：答得含糊它追问，答得漂亮它换题，你随时可以打断它。</p>
       </div>
 
       <div class="lab">岗位</div>
-      <div class="chips" id="roleChips">
-        <button class="chip on" data-role="AI 产品经理">AI 产品经理</button>
-        <button class="chip" data-role="产品经理">产品经理</button>
-        <button class="chip" data-role="通用">通用</button>
+      <div class="roleline">
+        <input class="inp" id="roleInput" placeholder="写岗位：数据分析师 / 运营">
+        <button class="chip hist" id="roleHistBtn">历史</button>
       </div>
-      <input class="inp" id="roleInput" placeholder="或直接写：数据分析师 / 运营 / C++ 后端">
+      <div class="hist" id="roleHist" hidden>
+        <button class="chip" data-role="数据分析师">数据分析师</button>
+        <button class="chip" data-role="用户增长运营">用户增长运营</button>
+      </div>
+      <div class="chips" id="roleChips">
+        <button class="chip on" data-role="通用岗位">通用岗位</button>
+      </div>
 
       <div class="lab">话题数</div>
       <div class="chips" id="roundChips">
@@ -202,7 +214,7 @@
     <div class="bar"><div class="t">对练中</div><div class="s" id="hudTime">02:14</div></div>
     <div class="hud"><span>第 <b id="hudQ">3</b> / 8 话题</span><span>追问 <b>1</b> 次</span><span>¥0.006</span></div>
     <div class="body" id="chat">
-      <div class="msg"><div class="who">面</div><div class="txt">先说说你理解的 AI 产品经理，每天到底在做什么。</div></div>
+      <div class="msg"><div class="who">面</div><div class="txt">先说说你最近做的一个项目，你在里面具体负责什么、最后拿到了什么结果。</div></div>
       <div class="msg me"><div class="txt">主要是接需求、写文档、跟开发对齐，然后看数据迭代。</div></div>
       <div class="tag">偏短 · 没有数字也没有结果 → 追问</div>
       <div class="msg"><div class="who">面</div><div class="txt">你说"看数据迭代"，具体看哪几个数？举一次你真的靠数据改了产品的例子。</div></div>
@@ -224,7 +236,7 @@
 
   <!-- ============ 3 复盘 ============ -->
   <section class="screen" id="p3">
-    <div class="bar"><div class="t">本场复盘</div><div class="s">AI 产品经理 · 体验式 · 8 话题</div></div>
+    <div class="bar"><div class="t">本场复盘</div><div class="s">通用岗位 · 体验式 · 8 话题</div></div>
     <div class="body">
       <div class="score">
         <div class="n">58<small>/ 100</small></div>
@@ -250,7 +262,7 @@
           <div class="s"><em>参考答法</em>发布转化率从 23% 提到 41%，分子是完成发布的用户，分母是点击"我要卖书"的用户，统计周期是上线后 30 天，和上线前 30 天对比。</div>
         </div>
         <div class="card">
-          <div class="q">AI 产品经理每天在做什么</div>
+          <div class="q">最近做的项目里你负责什么</div>
           <div class="c">答成了岗位职责清单，没有你自己的判断。</div>
           <div class="s"><em>参考答法</em>我的一天基本被"定义问题"占满：上午看数据找异常，下午和算法、开发对方案边界，晚上写清楚什么不做。上周我就砍掉了一个推荐功能，因为离线指标涨了但用户点击没变。</div>
         </div>
@@ -282,7 +294,7 @@
     });
   }
 
-  var role = 'AI 产品经理';
+  var role = '通用岗位';
   var hero = document.getElementById('heroTitle');
   var input = document.getElementById('roleInput');
 
@@ -291,6 +303,24 @@
     input.value = '';
     input.classList.remove('focus');
     hero.textContent = role + '，直接开口。';
+  });
+
+  // 历史岗位：写过的不用再写一遍（原型里放两条示例）
+  var hist = document.getElementById('roleHist');
+  var histBtn = document.getElementById('roleHistBtn');
+  histBtn.addEventListener('click', function(){
+    hist.hidden = !hist.hidden;
+    histBtn.classList.toggle('on', !hist.hidden);
+  });
+  hist.addEventListener('click', function(e){
+    var b = e.target.closest('.chip'); if (!b) return;
+    role = b.dataset.role;
+    input.value = role;
+    input.classList.add('focus');
+    hero.textContent = role + '，直接开口。';
+    document.querySelectorAll('#roleChips .chip').forEach(function(x){ x.classList.remove('on'); });
+    hist.hidden = true;
+    histBtn.classList.remove('on');
   });
   single('roundChips');
   single('levelChips');
@@ -304,8 +334,8 @@
       hero.textContent = v + '，直接开口。';
     } else {
       document.querySelector('#roleChips .chip').classList.add('on');
-      role = 'AI 产品经理';
-      hero.textContent = 'AI 产品经理，直接开口。';
+      role = '通用岗位';
+      hero.textContent = '通用岗位，直接开口。';
     }
   });
   input.addEventListener('focus', function(){ input.classList.add('focus'); });

@@ -370,6 +370,41 @@ def run_fallbacks(cfg) -> dict:
     return {"rows": rows, "ok": all(r["ok"] for r in rows)}
 
 
+def _make_pdf(text: str) -> bytes:
+    """现场造一个有文字层的 PDF，字用 Identity-H 编码（和 Word 导出的简历一样）。
+
+    只为了测解析器：没有 xref 表，正规阅读器可能打不开，但内容和结构是真的。
+    """
+    chars = list(dict.fromkeys(text))
+    code = {c: i + 1 for i, c in enumerate(chars)}
+    hexes = "".join(f"{code[c]:04X}" for c in text)
+    bfchar = "\n".join(f"<{code[c]:04X}> <{ord(c):04X}>" for c in chars)
+    content = f"BT /F1 12 Tf 72 720 Td <{hexes}> Tj ET".encode()
+    cmap = (
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n"
+        "/CMapName /Adobe-Identity-UCS def\n"
+        "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+        f"{len(chars)} beginbfchar\n{bfchar}\nendbfchar\n"
+        "endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend"
+    ).encode()
+    parts = [
+        b"%PDF-1.4\n",
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 595 842]"
+        b"/Resources<</Font<</F1 5 0 R>>>>/Contents 4 0 R>>endobj\n",
+        b"4 0 obj<</Length " + str(len(content)).encode() + b">>stream\n" + content
+        + b"\nendstream endobj\n",
+        b"5 0 obj<</Type/Font/Subtype/Type0/BaseFont/SimSun/Encoding/Identity-H"
+        b"/DescendantFonts[6 0 R]/ToUnicode 7 0 R>>endobj\n",
+        b"6 0 obj<</Type/Font/Subtype/CIDFontType2/BaseFont/SimSun/DW 1000>>endobj\n",
+        b"7 0 obj<</Length " + str(len(cmap)).encode() + b">>stream\n" + cmap
+        + b"\nendstream endobj\n",
+        b"trailer<</Root 1 0 R/Size 8>>\n%%EOF\n",
+    ]
+    return b"".join(parts)
+
+
 def run_resume(cfg) -> dict:
     """岗位与简历：解析出来、进得了提示词、开场换指令、手写岗位不改崩。
 
@@ -400,9 +435,19 @@ def run_resume(cfg) -> dict:
 
     pdf = S.parse_resume("测试.pdf", b"%PDF-1.4")
     rows.append({
-        "note": "PDF 不硬解析，给明确出路",
-        "ok": (not pdf.get("ok")) and "docx" in str(pdf.get("hint", "")),
+        "note": "扫描件 PDF 给一句人话",
+        "ok": (not pdf.get("ok")) and "文字层" in str(pdf.get("hint", "")),
         "detail": str(pdf.get("hint", ""))[:22],
+    })
+
+    # 有文字层的 PDF：现场造一个 Identity-H 的（字是字形编号，要查 ToUnicode 才认得出）。
+    # 这条守的是「PDF 只能另存为 docx」——那是不该有的门槛。
+    pdf_text = "张三，AI 产品经理实习。项目：校园二手书小程序，上线三个月日活 400，复购率 12%。"
+    got = S.parse_resume("简历.pdf", _make_pdf(pdf_text))
+    rows.append({
+        "note": "有文字层的 PDF 能读出正文",
+        "ok": bool(got.get("ok")) and "二手书" in (got.get("text") or ""),
+        "detail": f"{got.get('chars', 0)} 字 / {got.get('engine', '-')}",
     })
 
     text = "张三，做过面试陪练 Agent，日活 400。"

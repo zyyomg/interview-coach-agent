@@ -33,6 +33,7 @@ import time
 import uuid
 import webbrowser
 import zipfile
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -98,23 +99,325 @@ def _docx_text(raw: bytes) -> str:
     return "\n".join(lines)
 
 
-def parse_resume(name: str, raw: bytes) -> dict:
-    """解析简历文件。返回 {ok, text, chars} 或 {ok: False, kind, hint}。
+# ---------------------------------------------------------------- PDF
 
-    PDF 不支持——解析中文 PDF 要字体映射表，标准库做不到；
-    引第三方库又违背「零依赖」。所以直接给两条出路，而不是解析出乱码。
+def _pdf_streams(raw: bytes) -> list:
+    """把 PDF 里所有 stream 抽出来，返回 [(对象号, 内容)]，FlateDecode 的顺手解压。
+
+    不做完整语法解析，只按 "stream ... endstream" 切、看前面 1200 字节里有没有
+    FlateDecode。对象号靠往前找最近的 "N 0 obj"。
     """
+    out = []
+    pos = 0
+    for m in re.finditer(rb"stream\r?\n", raw):
+        start = m.end()
+        # 字体文件是压缩二进制，里面照样可能出现 "stream" / "endstream" 字节；
+        # 真正的流一定紧跟 ">>"，而且不会落在上一段流里面。
+        if m.start() < pos or b">" not in raw[max(0, m.start() - 4):m.start()]:
+            continue
+        end = raw.find(b"endstream", start)
+        if end < 0:
+            continue
+        pos = end + 9
+        head = raw[max(0, m.start() - 800):m.start()]
+        num = -1
+        for om in re.finditer(rb"(\d+)\s+\d+\s+obj\b", head):
+            num = int(om.group(1))
+        body = raw[start:end].rstrip(b"\r\n")
+        if b"FlateDecode" in head[-400:]:
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                try:
+                    body = zlib.decompressobj().decompress(body)
+                except zlib.error:
+                    continue
+        out.append((num, body))
+    return out
+
+
+def _pdf_page_streams(raw: bytes, streams: list) -> list:
+    """只留页面内容流（/Contents 指向的那些）。
+
+    不筛的话，字体文件里恰好有 "BT" 字节也会被当成内容流解，
+    解出来是一段乱码，混在简历后面。
+    """
+    refs = set()
+    for m in re.finditer(rb"/Contents\s*(\[[^\]]*\]|\d+\s+\d+\s+R)", raw):
+        for n in re.findall(rb"(\d+)\s+\d+\s+R", m.group(1)):
+            refs.add(int(n))
+    if refs:
+        picked = [body for num, body in streams if num in refs]
+        if picked:
+            return picked
+    return [body for _, body in streams]
+
+
+def _utf16be(hexstr: bytes) -> str:
+    try:
+        return bytes.fromhex(hexstr.decode()).decode("utf-16-be", "ignore")
+    except ValueError:
+        return ""
+
+
+def _pdf_cmap(streams: list) -> dict:
+    """收集 ToUnicode：CID -> 字符。
+
+    Identity-H 的中文 PDF，字符串里存的是字形编号，不查这张表只会得到乱码。
+    多个字体的表合并到一起（简历一般就一两个字体），冲突时先到先得。
+    """
+    cmap = {}
+    for _, s in streams:
+        if b"beginbfchar" not in s and b"beginbfrange" not in s:
+            continue
+        for block in re.findall(rb"beginbfchar(.*?)endbfchar", s, re.S):
+            for src, dst in re.findall(rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", block):
+                cmap[int(src, 16)] = _utf16be(dst)
+        for block in re.findall(rb"beginbfrange(.*?)endbfrange", s, re.S):
+            for lo, hi, dst in re.findall(
+                    rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", block):
+                a, b, base = int(lo, 16), int(hi, 16), int(dst, 16)
+                if b < a or b - a > 65535:
+                    continue
+                for k in range(b - a + 1):
+                    cmap.setdefault(a + k, chr(base + k))
+    return cmap
+
+
+def _pdf_unescape(s: bytes) -> bytes:
+    out = bytearray()
+    i, n = 0, len(s)
+    table = {0x6E: 10, 0x72: 13, 0x74: 9, 0x62: 8, 0x66: 12,
+             0x28: 40, 0x29: 41, 0x5C: 92}
+    while i < n:
+        c = s[i]
+        if c != 0x5C or i + 1 >= n:
+            out.append(c)
+            i += 1
+            continue
+        nxt = s[i + 1]
+        if nxt in table:
+            out.append(table[nxt])
+            i += 2
+        elif 0x30 <= nxt <= 0x37:            # 八进制
+            j, val = i + 1, 0
+            while j < n and j < i + 4 and 0x30 <= s[j] <= 0x37:
+                val = val * 8 + (s[j] - 0x30)
+                j += 1
+            out.append(val & 0xFF)
+            i = j
+        elif nxt in (10, 13):                # 续行
+            i += 2
+        else:
+            out.append(nxt)
+            i += 2
+    return bytes(out)
+
+
+def _pdf_objects(raw: bytes) -> dict:
+    """{对象号: 对象体}。只用来读字体字典这类小对象。"""
+    objs = {}
+    for m in re.finditer(rb"(\d+)\s+\d+\s+obj\b(.*?)endobj", raw, re.S):
+        objs.setdefault(int(m.group(1)), m.group(2))
+    return objs
+
+
+def _pdf_font_maps(raw: bytes, streams: list) -> dict:
+    """{资源名 /F1: (cmap, 是否两字节)}。
+
+    一份 PDF 里常有多个子集字体，每个字体自己的字形编号各不相同。
+    全并成一张表会出现「同一个编号在两个字体里是两个字」，正文后面就挂一串乱码。
+    """
+    objs = _pdf_objects(raw)
+    by_num = {num: body for num, body in streams}
+    names = {}
+    for m in re.finditer(rb"/Font\s*<<(.*?)>>", raw, re.S):
+        for name, num in re.findall(rb"/([A-Za-z0-9_.+-]+)\s+(\d+)\s+\d+\s+R", m.group(1)):
+            names[name.decode("latin-1")] = int(num)
+    out = {}
+    for name, num in names.items():
+        body = objs.get(num, b"")
+        tm = re.search(rb"/ToUnicode\s+(\d+)\s+\d+\s+R", body)
+        if not tm:
+            out[name] = ({}, False)
+            continue
+        cm = _pdf_cmap([(-1, by_num.get(int(tm.group(1)), b""))])
+        out[name] = (cm, any(k > 0xFF for k in cm))
+    return out
+
+
+def _pdf_join_wrapped(lines: list) -> list:
+    """把「同一个英文单词被切成两行」的碎片接回去。
+
+    PDF 里英文常被拆成多个 Tj（"Py" + "thon"），中文一般整行走。
+    """
+    out = []
+    for ln in lines:
+        if out and re.search(r"[A-Za-z0-9]$", out[-1]) and re.match(r"[a-z0-9]", ln):
+            out[-1] += ln
+        else:
+            out.append(ln)
+    return out
+
+
+def _pdf_text_builtin(raw: bytes) -> str:
+    """内置解析：只用标准库，能读「有文字层」的 PDF。
+
+    限制说清楚：扫描件、图片型 PDF、加密 PDF 读不出来——这不是偷懒，
+    是文件里本来就没有字，只有图。
+    """
+    streams = _pdf_streams(raw)
+    cmap = _pdf_cmap(streams)
+    wide = any(k > 0xFF for k in cmap)       # Identity-H：一个字两个字节
+    fonts = _pdf_font_maps(raw, streams)
+    use_cmap, use_wide = cmap, wide
+    last_name = ""
+    lines = []
+    for data in _pdf_page_streams(raw, streams):
+        if b"BT" not in data:
+            continue
+        cur = []
+        i, n = 0, len(data)
+        while i < n:
+            c = data[i]
+            if c in b" \t\r\n":
+                i += 1
+            elif c == 0x25:                       # % 注释
+                j = data.find(b"\n", i)
+                i = n if j < 0 else j + 1
+            elif c == 0x28 or (c == 0x3C and data[i + 1:i + 2] != b"<"):
+                if c == 0x28:
+                    depth, j = 1, i + 1
+                    while j < n and depth:
+                        if data[j] == 0x5C:
+                            j += 2
+                            continue
+                        if data[j] == 0x28:
+                            depth += 1
+                        elif data[j] == 0x29:
+                            depth -= 1
+                        j += 1
+                    bs = _pdf_unescape(data[i + 1:j - 1])
+                    i = j
+                else:
+                    j = data.find(b">", i + 1)
+                    if j < 0:
+                        break
+                    hx = re.sub(rb"\s", b"", data[i + 1:j])
+                    if len(hx) % 2:
+                        hx += b"0"
+                    try:
+                        bs = bytes.fromhex(hx.decode())
+                    except ValueError:
+                        bs = b""
+                    i = j + 1
+                if use_wide:
+                    codes = [int.from_bytes(bs[k:k + 2], "big") for k in range(0, len(bs) - 1, 2)]
+                else:
+                    codes = list(bs)
+                cur.append("".join(use_cmap.get(x, "" if use_wide else chr(x))
+                                   for x in codes if x))
+            elif c == 0x2F:                       # /Name
+                j = i + 1
+                while j < n and data[j] not in b" \t\r\n/[]<>()":
+                    j += 1
+                last_name = data[i + 1:max(j, i + 1)].decode("latin-1")
+                i = max(j, i + 1)
+            elif c in b"+-.0123456789":
+                j = i + 1
+                while j < n and data[j] not in b" \t\r\n/[]<>()":
+                    j += 1
+                i = max(j, i + 1)
+            else:                                 # 操作符
+                j = i
+                while j < n and data[j] not in b" \t\r\n/[]<>()":
+                    j += 1
+                op = data[i:j]
+                i = max(j, i + 1)
+                if op == b"Tf" and last_name in fonts:
+                    use_cmap, use_wide = fonts[last_name]
+                if op in (b"Tj", b"TJ", b"'", b'"', b"Td", b"TD", b"T*", b"ET", b"Tm"):
+                    if cur:
+                        lines.append("".join(cur))
+                        cur = []
+        if cur:
+            lines.append("".join(cur))
+    return "\n".join(_pdf_join_wrapped(lines))
+
+
+def _pdf_with_pymupdf(raw: bytes) -> str:
+    import pymupdf                                    # 装了就用，中文支持最好
+    with pymupdf.open(stream=raw, filetype="pdf") as doc:
+        return "\n".join(page.get_text() for page in doc)
+
+
+def _pdf_with_pypdf(raw: bytes) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(raw))
+    if getattr(reader, "is_encrypted", False):
+        reader.decrypt("")                            # 只试空密码，别的密码不该猜
+    return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+_PDF_READABLE = re.compile(
+    r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffefA-Za-z0-9\s.,;:%()\-/·、，。：；！？（）《》“”‘’…—]")
+
+
+def _pdf_text_ok(text: str) -> bool:
+    """这段抽出来的东西像不像人话。
+
+    有些 PDF 缺字体宽度表，库能吐出「一串控制符」，非空但没用——
+    与其把乱码喂给模型，不如换一条路再试。
+    """
+    s = (text or "").strip()
+    if len(s) < 40:
+        return False
+    good = len(_PDF_READABLE.findall(s))
+    return good / max(1, len(s)) > 0.75
+
+
+def _pdf_text(raw: bytes) -> tuple:
+    """PDF 取文字，返回 (text, engine)。
+
+    先试本机装了的库（不写进依赖，装了就用），读出来不像人话就换下一条，
+    最后退回内置解析。三条路都可能读不出字——扫描件没有文字层，谁读都一样。
+    """
+    for engine, fn in (("pymupdf", _pdf_with_pymupdf), ("pypdf", _pdf_with_pypdf)):
+        try:
+            text = fn(raw)
+        except ImportError:
+            continue
+        except Exception:
+            continue
+        if _pdf_text_ok(text):
+            return text, engine
+    text = _pdf_text_builtin(raw)
+    return text, "builtin" if _pdf_text_ok(text) else "none"
+
+
+def parse_resume(name: str, raw: bytes) -> dict:
+    """解析简历文件。返回 {ok, text, chars} 或 {ok: False, kind, hint}。"""
     ext = (name.rsplit(".", 1)[-1] if "." in name else "").lower()
-    if ext == "pdf":
-        return {
-            "ok": False, "kind": "pdf",
-            "hint": "PDF 读不了文字层。用 Word/WPS 打开后「另存为 .docx」，或把文字直接粘到下面。",
-        }
-    if ext not in ("docx", "txt", "md", "markdown"):
+    if ext not in ("docx", "pdf", "txt", "md", "markdown"):
         return {
             "ok": False, "kind": "type",
-            "hint": "支持 .docx / .txt / .md。PDF 请先另存为 .docx，或直接粘贴文字。",
+            "hint": "支持 .docx / .pdf / .txt / .md。老式 .doc 请另存为 .docx，或直接粘贴文字。",
         }
+    engine = ""
+    if ext == "pdf":
+        try:
+            text, engine = _pdf_text(raw)
+        except Exception:
+            text, engine = "", "none"
+        text = _clean_resume(text)
+        if engine == "none" or len(text) < 40:
+            return {
+                "ok": False, "kind": "pdf_scan",
+                "hint": "这份 PDF 没有文字层（扫描件或图片），读不出字。"
+                        "用 Word/WPS 打开另存为 .docx，或把文字粘到下面。",
+            }
+        return {"ok": True, "text": text, "chars": len(text), "name": name,
+                "engine": engine}
     try:
         text = _docx_text(raw) if ext == "docx" else _decode_text(raw)
     except (zipfile.BadZipFile, KeyError, ET.ParseError):
@@ -255,9 +558,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._resume(body)
 
         if path == "/api/session/start":
-            # role 既可以是预设 key（ai_pm / pm / general），也可以直接是岗位名。
-            # 手写岗位由 agent 那边洗（限长、限字符），这里只做长度上限。
-            role = str(body.get("role") or "ai_pm").strip()[:24]
+            # role 既可以是预设 key（general），也可以直接是岗位名。
+            # 界面现在只剩「通用岗位」和手填两种，手填由 agent 那边洗（限长、限字符）。
+            role = str(body.get("role") or "general").strip()[:24]
             rounds = int(body.get("rounds") or CONFIG.get("max_questions", 8))
             rounds = max(4, min(20, rounds))
             level = str(body.get("level") or CONFIG.get("level") or "normal")
@@ -271,7 +574,7 @@ class Handler(BaseHTTPRequestHandler):
             if form == "formal" and len(resume_text) < 60:
                 return self._json({
                     "ok": False, "kind": "no_resume",
-                    "hint": "正式面试要读简历：先选一个 .docx，或把简历文字粘进去；"
+                    "hint": "正式面试要读简历：先选一个 .docx / .pdf / .txt，或把简历文字粘进去；"
                             "只想随手练就切回「体验式」。",
                 }, 400)
             return self._start(role, rounds, level, resume_text, resume_name, form)
