@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>面试陪练 · 三屏设计稿（导入 Figma 用）</title>
+<style>
+  :root{
+    --bg:#F4F5F7; --panel:#fff; --line:#E6E8EC; --line2:#EEF0F3;
+    --ink:#12141A; --ink2:#5A6473; --ink3:#98A1B0;
+    --accent:#2B55D6; --accent-soft:#EEF2FF; --accent-border:#C5D2F8;
+    --amber:#A16207; --amber-bg:#FEF7E0;
+    --violet:#6D28D9; --violet-bg:#F4ECFF;
+    --green:#067A5B; --green-bg:#E3F7EF;
+    --gray:#4B5563; --gray-bg:#EEF0F3;
+    --shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 24px rgba(16,24,40,.06);
+    --shadow-lg:0 24px 60px rgba(16,24,40,.22);
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{
+    background:#E9EBEF; padding:60px;
+    font-family:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased; color:var(--ink);
+  }
+  .board{display:flex; flex-direction:column; gap:56px}
+  .slot{display:flex; flex-direction:column; gap:12px}
+  .slot-tag{font-size:13px; color:#6B7280; letter-spacing:.3px}
+
+  /* ---------- 画板 ---------- */
+  .screen{
+    width:1440px; height:900px; display:flex; overflow:hidden;
+    background:var(--bg); position:relative;
+  }
+
+  /* ---------- 侧栏 ---------- */
+  .side{
+    width:304px; flex:0 0 304px; background:var(--panel);
+    border-right:1px solid var(--line);
+    padding:20px 18px 16px; display:flex; flex-direction:column; gap:12px;
+  }
+  .brand{display:flex; align-items:center; gap:11px}
+  .logo{
+    width:38px; height:38px; border-radius:11px; flex:none;
+    background:linear-gradient(145deg,#3358D8,#1F3BA8);
+    color:#fff; font-size:18px; font-weight:600;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .brand-txt h1{font-size:16px; font-weight:600; letter-spacing:.2px}
+  .brand-txt p{font-size:11.5px; color:var(--ink3); margin-top:3px}
+
+  .card{background:#FCFCFD; border:1px solid var(--line); border-radius:14px; padding:13px}
+  .lab{font-size:11.5px; color:var(--ink3); margin-bottom:7px; letter-spacing:.3px}
+  .lab + .lab, .seg + .lab, .chips + .lab, .txt + .lab, .hint2 + .lab{margin-top:14px}
+
+  .txt{
+    width:100%; height:36px; border:1px solid var(--line); border-radius:9px;
+    padding:8px 10px; font-size:12.5px; color:var(--ink3); background:#fff;
+    display:flex; align-items:center;
+  }
+  .chips{display:flex; flex-wrap:wrap; gap:6px; margin-top:8px}
+  .chip{
+    border:1px solid var(--line); background:#fff; color:var(--ink2);
+    border-radius:999px; padding:5px 12px; font-size:12px; white-space:nowrap;
+  }
+  .chip.on{background:var(--accent-soft); border-color:var(--accent-border); color:var(--accent); font-weight:600}
+
+  .seg{display:flex; gap:5px}
+  .seg > span{
+    flex:1; text-align:center; border:1px solid var(--line); background:#fff; color:var(--ink2);
+    border-radius:9px; padding:8px 4px; font-size:12px; white-space:nowrap;
+  }
+  .seg.tiny > span{padding:7px 0}
+  .seg > span.on{background:var(--accent-soft); border-color:var(--accent-border); color:var(--accent); font-weight:600}
+
+  .hint2{font-size:11.5px; color:var(--ink3); line-height:1.4; margin-top:7px}
+  .hint2.on{color:var(--accent)}
+
+  .row{display:flex; align-items:center; gap:9px}
+  .switch{
+    width:38px; height:22px; border-radius:99px; background:var(--accent);
+    flex:none; display:flex; align-items:center; justify-content:flex-end; padding:2px;
+  }
+  .switch i{width:18px; height:18px; border-radius:50%; background:#fff; display:block}
+
+  .primary{
+    width:100%; margin-top:16px; background:var(--accent); color:#fff;
+    border-radius:10px; padding:11px; font-size:13.5px; font-weight:600; text-align:center;
+  }
+  .primary.off{background:#B9C2D6}
+  .fine{font-size:11px; color:var(--ink3); line-height:1.6; margin-top:10px}
+
+  .mrow{display:flex; justify-content:space-between; align-items:baseline; font-size:12px; color:var(--ink3)}
+  .mrow b{color:var(--ink); font-size:13px; font-weight:600}
+  .bar{height:5px; border-radius:99px; background:var(--line2); margin:9px 0 12px; overflow:hidden}
+  .bar i{display:block; height:100%; background:var(--accent); border-radius:99px}
+  .grid2{display:flex; flex-wrap:wrap; gap:10px 6px}
+  .grid2 > div{width:calc(50% - 3px)}
+  .grid2 b{display:block; font-size:13px; font-weight:600; color:var(--ink)}
+  .grid2 i{display:block; font-style:normal; font-size:10.5px; color:var(--ink3); margin-top:2px}
+  .costline{display:flex; justify-content:space-between; font-size:12px; color:var(--ink3); margin-top:10px}
+  .costline b{color:var(--ink); font-weight:600; font-size:12px}
+  .costline.sub{font-size:11px; margin-top:6px}
+
+  .tips ul{list-style:none; margin-top:2px}
+  .tips li{font-size:11.5px; color:var(--ink2); line-height:1.82}
+  .tips b{font-weight:600; color:var(--ink)}
+  .tips .em{color:var(--amber); font-weight:600}
+
+  .foot{margin-top:auto; display:flex; align-items:center; gap:7px; font-size:10.5px; color:var(--ink3)}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--green); display:block}
+
+  /* ---------- 主区 ---------- */
+  .stage{flex:1; display:flex; flex-direction:column; background:var(--bg); min-width:0}
+
+  .top{
+    height:58px; flex:none; display:flex; align-items:center; justify-content:space-between;
+    padding:0 24px; border-bottom:1px solid var(--line); background:#fff;
+  }
+  .status{display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--ink2)}
+  .pulse{width:8px; height:8px; border-radius:50%; background:var(--ink3); display:block}
+  .pulse.live{background:#0EA37A}
+  .top-right{display:flex; align-items:center; gap:14px}
+  .hud{display:flex; gap:6px}
+  .hud > div{background:#fff; border:1px solid var(--line); border-radius:9px; padding:4px 10px; text-align:center}
+  .hud b{display:block; font-size:11.5px; font-weight:600; color:var(--ink2)}
+  .hud i{display:block; font-style:normal; font-size:10px; color:var(--ink3); margin-top:1px}
+  .top-div{width:1px; height:20px; background:var(--line)}
+  .hist-btn{
+    height:30px; border:1px solid var(--line); border-radius:9px; padding:0 9px;
+    display:flex; align-items:center; gap:5px; font-size:11.5px; color:var(--ink2); background:#fff;
+  }
+
+  .chat{flex:1; min-height:0; padding:26px 24px 20px; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; overflow:hidden}
+  .chat.center{justify-content:center}
+  .chat-inner{width:100%; max-width:760px}
+
+  .empty{max-width:460px; margin:0 auto; text-align:center}
+  .empty-mark{
+    width:54px; height:54px; margin:0 auto 18px; border-radius:16px; background:#fff;
+    border:1px solid var(--line); box-shadow:var(--shadow);
+    display:flex; align-items:center; justify-content:center;
+    font-size:17px; color:var(--accent); font-weight:600;
+  }
+  .empty h2{font-size:22px; line-height:1.5; font-weight:600; letter-spacing:-.2px}
+  .empty h2 span{color:var(--accent)}
+  .empty p{font-size:14.5px; line-height:1.78; color:var(--ink2); margin-top:10px}
+  .empty-tips{display:flex; justify-content:center; gap:16px; margin-top:18px; font-size:11px; color:var(--ink3)}
+
+  .msg{display:flex; gap:10px; margin-bottom:20px}
+  .msg.me{flex-direction:row-reverse}
+  .avatar{
+    width:30px; height:30px; flex:none; border-radius:9px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:11.5px; font-weight:600; background:#EEF1F6; color:#435066;
+  }
+  .msg.me .avatar{background:var(--accent-soft); color:var(--accent)}
+  .col{max-width:580px; display:flex; flex-direction:column; min-width:0}
+  .msg.me .col{align-items:flex-end}
+  .tagline{display:flex; align-items:center; gap:7px; margin:0 0 6px 2px; font-size:10.5px; color:var(--ink3)}
+  .tag{font-size:10px; padding:2px 7px; border-radius:99px; background:var(--accent-soft); color:var(--accent); letter-spacing:.3px}
+  .tag.probe{background:var(--amber-bg); color:var(--amber)}
+  .tag.clarify{background:var(--gray-bg); color:var(--gray)}
+  .tag.switch{background:var(--violet-bg); color:var(--violet)}
+  .bubble{padding:12px 15px; border-radius:13px; font-size:14.5px; line-height:1.72}
+  .msg.agent .bubble{background:#fff; border:1px solid var(--line); border-top-left-radius:5px; color:var(--ink)}
+  .msg.me .bubble{background:var(--accent); color:#fff; border-top-right-radius:5px}
+
+  .composer{
+    flex:none; display:flex; align-items:flex-end; gap:10px;
+    padding:14px 24px 8px; max-width:808px; width:100%; margin:0 auto;
+  }
+  .mic{
+    width:40px; height:40px; flex:none; border-radius:50%;
+    border:1px solid var(--line); background:#fff;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .mic.on{background:var(--accent); border-color:var(--accent)}
+  .inputwrap{
+    flex:1; background:#fff; border:1px solid var(--line); border-radius:14px;
+    padding:10px 14px; box-shadow:var(--shadow); min-height:44px; display:flex; align-items:center;
+  }
+  .inputwrap span{font-size:13px; color:var(--ink3)}
+  .ghost{
+    height:36px; padding:0 10px; border:0; background:none;
+    font-size:12.5px; color:var(--ink2); flex:none;
+  }
+  .ghost.off{color:#C3C9D4}
+
+  /* ---------- 复盘弹层 ---------- */
+  .mask{position:absolute; inset:0; background:rgba(18,22,32,.38); z-index:2}
+  .modal{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:760px; background:#fff; border-radius:18px; padding:26px 28px;
+    box-shadow:var(--shadow-lg); z-index:3;
+  }
+  .report-head{display:flex; align-items:center; gap:18px}
+  .ring{width:78px; height:78px; flex:none; position:relative}
+  .ring b{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:24px; font-weight:600; color:var(--ink);
+  }
+  .ring i{
+    position:absolute; left:0; right:0; bottom:13px; text-align:center;
+    font-style:normal; font-size:10px; color:var(--ink3);
+  }
+  .report-title h3{font-size:20px; font-weight:600}
+  .report-title p{font-size:12.5px; color:var(--ink2); margin-top:5px}
+  .two{display:flex; gap:22px; margin:20px 0}
+  .two > div{flex:1}
+  .modal h4{font-size:12px; font-weight:600; color:var(--ink3); letter-spacing:.3px; margin-bottom:8px}
+  .two ul{list-style:none}
+  .two li{font-size:12.5px; line-height:1.75; color:var(--ink2); padding-left:12px; position:relative; margin-bottom:4px}
+  .two li::before{content:""; position:absolute; left:0; top:8px; width:4px; height:4px; border-radius:50%; background:var(--line2)}
+  .tbl{width:100%; border-collapse:collapse}
+  .tbl td{font-size:12.5px; padding:7px 0; border-bottom:1px solid var(--line2); color:var(--ink2)}
+  .tbl td:last-child{text-align:right; color:var(--ink); font-weight:600}
+  .samples{display:flex; gap:10px; margin-top:4px}
+  .sample{flex:1; border:1px solid var(--line); border-radius:10px; padding:10px 12px; background:#FCFCFD}
+  .sample .q{font-size:11.5px; color:var(--ink3); line-height:1.5; margin-bottom:6px}
+  .sample .a{font-size:11.5px; color:var(--ink2); line-height:1.6}
+  .actions{display:flex; gap:10px; justify-content:flex-end; margin-top:20px}
+  .actions .btn-primary{background:var(--accent); color:#fff; border-radius:10px; padding:9px 18px; font-size:13px; font-weight:600}
+  .actions .btn-ghost{border:1px solid var(--line); border-radius:10px; padding:9px 16px; font-size:13px; color:var(--ink2)}
+</style>
+</head>
+<body>
+<div class="board">
+
+  <!-- ================= 01 首页 ================= -->
+  <div class="slot">
+    <div class="slot-tag">01 首页</div>
+    <section class="screen" id="s1">
+      <aside class="side">
+        <div class="brand">
+          <div class="logo">面</div>
+          <div class="brand-txt"><h1>面试陪练</h1><p>会追问 · 会打断 · 会记分</p></div>
+        </div>
+
+        <div class="card">
+          <div class="lab">岗位</div>
+          <div class="txt">写岗位：数据分析师 / 运营</div>
+          <div class="chips"><span class="chip on">通用岗位</span></div>
+
+          <div class="lab">话题数</div>
+          <div class="seg tiny">
+            <span>6</span><span class="on">8</span><span>10</span><span>12</span>
+          </div>
+
+          <div class="lab">难度</div>
+          <div class="seg">
+            <span>简单</span><span class="on">标准</span><span>困难</span>
+          </div>
+
+          <div class="lab">面试方式</div>
+          <div class="seg">
+            <span class="on">体验式</span><span>正式</span>
+          </div>
+          <p class="hint2">不带简历，按岗位通用题问，随手练</p>
+
+          <div class="lab">语音</div>
+          <div class="row">
+            <div class="switch"><i></i></div>
+            <span class="hint2" style="margin-top:0">它会念，你说完自动接话</span>
+          </div>
+
+          <div class="primary">开始对练</div>
+        </div>
+
+        <div class="card">
+          <div class="mrow"><span>话题进度</span><b>— / —</b></div>
+          <div class="bar"><i style="width:0%"></i></div>
+          <div class="grid2">
+            <div><b>0</b><i>回答轮次</i></div>
+            <div><b>0</b><i>追问</i></div>
+            <div><b>0</b><i>澄清</i></div>
+            <div><b>0</b><i>打断</i></div>
+          </div>
+          <div class="costline"><span>本场成本</span><b>¥0.0000</b></div>
+          <div class="costline sub"><span>接 Key 以来累计</span><b>—</b></div>
+        </div>
+
+        <div class="card tips">
+          <div class="lab">怎么说</div>
+          <ul>
+            <li>说完停 <b>3 秒</b>自动提交，不用按键</li>
+            <li>按住 <b>空格</b> 说话，松手就发</li>
+            <li>它还在念的时候开口，就算<span class="em">打断</span></li>
+          </ul>
+        </div>
+
+        <div class="foot"><span class="dot"></span><span>已连接 · deepseek-flash</span></div>
+      </aside>
+
+      <main class="stage">
+        <header class="top">
+          <div class="status"><span class="pulse"></span><span>还没开始</span></div>
+          <div class="top-right">
+            <div class="hud">
+              <div><b>—</b><i>首字</i></div>
+              <div><b>—</b><i>首音</i></div>
+              <div><b>—</b><i>整轮</i></div>
+            </div>
+            <div class="top-div"></div>
+            <div class="hist-btn">◷ 往期</div>
+          </div>
+        </header>
+
+        <div class="chat center">
+          <div class="chat-inner">
+            <div class="empty">
+              <div class="empty-mark">对练</div>
+              <h2><span>通用岗位</span>，直接开口。</h2>
+              <p>面试官一次只问一个问题：你答得含糊它追问，答得漂亮它换题，你随时可以打断它。结束后给你一份复盘和一组数据。</p>
+              <div class="empty-tips">
+                <span>8 个话题约 10 分钟</span><span>一场约 ¥0.03</span><span>不需要注册</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="mic">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#98A1B0" stroke-width="1.8" stroke-linecap="round">
+              <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>
+            </svg>
+          </div>
+          <div class="inputwrap"><span>还没开始 · 点左上角「开始对练」</span></div>
+          <div class="ghost off">暂停</div>
+          <div class="ghost off">发送</div>
+          <div class="ghost off">结束</div>
+        </div>
+      </main>
+    </section>
+  </div>
+
+  <!-- ================= 02 对练中 ================= -->
+  <div class="slot">
+    <div class="slot-tag">02 对练中</div>
+    <section class="screen" id="s2">
+      <aside class="side">
+        <div class="brand">
+          <div class="logo">面</div>
+          <div class="brand-txt"><h1>面试陪练</h1><p>会追问 · 会打断 · 会记分</p></div>
+        </div>
+
+        <div class="card">
+          <div class="lab">岗位</div>
+          <div class="txt">写岗位：数据分析师 / 运营</div>
+          <div class="chips"><span class="chip on">通用岗位</span></div>
+
+          <div class="lab">话题数</div>
+          <div class="seg tiny">
+            <span>6</span><span class="on">8</span><span>10</span><span>12</span>
+          </div>
+
+          <div class="lab">难度</div>
+          <div class="seg">
+            <span>简单</span><span class="on">标准</span><span>困难</span>
+          </div>
+
+          <div class="lab">面试方式</div>
+          <div class="seg">
+            <span class="on">体验式</span><span>正式</span>
+          </div>
+          <p class="hint2">不带简历，按岗位通用题问，随手练</p>
+
+          <div class="lab">语音</div>
+          <div class="row">
+            <div class="switch"><i></i></div>
+            <span class="hint2" style="margin-top:0">它会念，你说完自动接话</span>
+          </div>
+
+          <div class="primary off">对练进行中</div>
+        </div>
+
+        <div class="card">
+          <div class="mrow"><span>话题进度</span><b>3 / 8</b></div>
+          <div class="bar"><i style="width:37.5%"></i></div>
+          <div class="grid2">
+            <div><b>5</b><i>回答轮次</i></div>
+            <div><b>2</b><i>追问</i></div>
+            <div><b>1</b><i>澄清</i></div>
+            <div><b>0</b><i>打断</i></div>
+          </div>
+          <div class="costline"><span>本场成本</span><b>¥0.0031</b></div>
+          <div class="costline sub"><span>接 Key 以来累计</span><b>¥0.0370</b></div>
+        </div>
+
+        <div class="card tips">
+          <div class="lab">怎么说</div>
+          <ul>
+            <li>说完停 <b>3 秒</b>自动提交，不用按键</li>
+            <li>按住 <b>空格</b> 说话，松手就发</li>
+            <li>它还在念的时候开口，就算<span class="em">打断</span></li>
+          </ul>
+        </div>
+
+        <div class="foot"><span class="dot"></span><span>面试进行中 · 03:47</span></div>
+      </aside>
+
+      <main class="stage">
+        <header class="top">
+          <div class="status"><span class="pulse live"></span><span>正在听 · 你说完自动提交</span></div>
+          <div class="top-right">
+            <div class="hud">
+              <div><b>755 ms</b><i>首字</i></div>
+              <div><b>1035 ms</b><i>首音</i></div>
+              <div><b>2310 ms</b><i>整轮</i></div>
+            </div>
+            <div class="top-div"></div>
+            <div class="hist-btn">◷ 往期</div>
+          </div>
+        </header>
+
+        <div class="chat">
+          <div class="chat-inner">
+
+            <div class="msg agent">
+              <div class="avatar">面</div>
+              <div class="col">
+                <div class="tagline">第 1 题</div>
+                <div class="bubble">先说说你在面试陪练这个项目里，具体负责哪一块？</div>
+              </div>
+            </div>
+
+            <div class="msg me">
+              <div class="avatar">我</div>
+              <div class="col">
+                <div class="tagline">第 1 题 · 回答</div>
+                <div class="bubble">我自己做的，从需求、原型到前端和自测。8 个话题一场，5 场真实对练花了 0.0339 元。</div>
+              </div>
+            </div>
+
+            <div class="msg agent">
+              <div class="avatar">面</div>
+              <div class="col">
+                <div class="tagline">第 2 题 <span class="tag probe">追问</span></div>
+                <div class="bubble">0.0339 元这个数是怎么算出来的？包含哪些调用？</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="mic on">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
+              <rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>
+            </svg>
+          </div>
+          <div class="inputwrap"><span>说完停 3 秒自动提交 · 也可以打字</span></div>
+          <div class="ghost">暂停</div>
+          <div class="ghost">发送</div>
+          <div class="ghost">结束</div>
+        </div>
+      </main>
+    </section>
+  </div>
+
+  <!-- ================= 03 复盘 ================= -->
+  <div class="slot">
+    <div class="slot-tag">03 复盘</div>
+    <section class="screen" id="s3">
+      <aside class="side">
+        <div class="brand">
+          <div class="logo">面</div>
+          <div class="brand-txt"><h1>面试陪练</h1><p>会追问 · 会打断 · 会记分</p></div>
+        </div>
+
+        <div class="card">
+          <div class="lab">岗位</div>
+          <div class="txt">写岗位：数据分析师 / 运营</div>
+          <div class="chips"><span class="chip on">通用岗位</span></div>
+
+          <div class="lab">话题数</div>
+          <div class="seg tiny">
+            <span>6</span><span class="on">8</span><span>10</span><span>12</span>
+          </div>
+
+          <div class="lab">难度</div>
+          <div class="seg">
+            <span>简单</span><span class="on">标准</span><span>困难</span>
+          </div>
+
+          <div class="lab">面试方式</div>
+          <div class="seg">
+            <span class="on">体验式</span><span>正式</span>
+          </div>
+          <p class="hint2">不带简历，按岗位通用题问，随手练</p>
+
+          <div class="lab">语音</div>
+          <div class="row">
+            <div class="switch"><i></i></div>
+            <span class="hint2" style="margin-top:0">它会念，你说完自动接话</span>
+          </div>
+
+          <div class="primary">再来一场</div>
+        </div>
+
+        <div class="card">
+          <div class="mrow"><span>话题进度</span><b>8 / 8</b></div>
+          <div class="bar"><i style="width:100%"></i></div>
+          <div class="grid2">
+            <div><b>11</b><i>回答轮次</i></div>
+            <div><b>2</b><i>追问</i></div>
+            <div><b>1</b><i>澄清</i></div>
+            <div><b>0</b><i>打断</i></div>
+          </div>
+          <div class="costline"><span>本场成本</span><b>¥0.0128</b></div>
+          <div class="costline sub"><span>接 Key 以来累计</span><b>¥0.0467</b></div>
+        </div>
+
+        <div class="card tips">
+          <div class="lab">怎么说</div>
+          <ul>
+            <li>说完停 <b>3 秒</b>自动提交，不用按键</li>
+            <li>按住 <b>空格</b> 说话，松手就发</li>
+            <li>它还在念的时候开口，就算<span class="em">打断</span></li>
+          </ul>
+        </div>
+
+        <div class="foot"><span class="dot"></span><span>本场已结束 · 9 分 42 秒</span></div>
+      </aside>
+
+      <main class="stage">
+        <header class="top">
+          <div class="status"><span class="pulse"></span><span>已结束 · 复盘已生成</span></div>
+          <div class="top-right">
+            <div class="hud">
+              <div><b>812 ms</b><i>首字 P50</i></div>
+              <div><b>1094 ms</b><i>首音 P50</i></div>
+              <div><b>2.4 s</b><i>整轮 P50</i></div>
+            </div>
+            <div class="top-div"></div>
+            <div class="hist-btn">◷ 往期</div>
+          </div>
+        </header>
+        <div class="chat"></div>
+        <div class="composer">
+          <div class="mic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#98A1B0" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></div>
+          <div class="inputwrap"><span>这一场结束了 · 看复盘，或者再来一场</span></div>
+          <div class="ghost off">暂停</div>
+          <div class="ghost off">发送</div>
+          <div class="ghost off">结束</div>
+        </div>
+      </main>
+
+      <div class="mask"></div>
+      <div class="modal">
+        <div class="report-head">
+          <div class="ring">
+            <svg width="78" height="78" viewBox="0 0 78 78">
+              <circle cx="39" cy="39" r="35" fill="#fff" stroke="#EDEFF3" stroke-width="6"/>
+              <circle cx="39" cy="39" r="35" fill="none" stroke="#2B55D6" stroke-width="6"
+                      stroke-linecap="round" stroke-dasharray="219.9" stroke-dashoffset="48.4"
+                      transform="rotate(-90 39 39)"/>
+            </svg>
+            <b>78</b>
+            <i>分</i>
+          </div>
+          <div class="report-title">
+            <h3>8 个话题走完，2 次追问没答实</h3>
+            <p>表达清楚，但数字的来源没讲透。下一场先把每个指标怎么统计的说一遍。</p>
+          </div>
+        </div>
+
+        <div class="two">
+          <div>
+            <h4>三条优势</h4>
+            <ul>
+              <li>项目讲得具体，能说出 8 话题、0.0339 元这种实数</li>
+              <li>主动交待了「自己做的」，边界清楚</li>
+              <li>被打断后能接回来，没乱</li>
+            </ul>
+          </div>
+          <div>
+            <h4>三条改进</h4>
+            <ul>
+              <li>成本数字只给结论，没给单位与统计口径</li>
+              <li>「日活 400」这个数没说明怎么统计的</li>
+              <li>回答偏长，第一句没有先给结论</li>
+            </ul>
+          </div>
+        </div>
+
+        <h4>本场数据</h4>
+        <table class="tbl">
+          <tr><td>时长</td><td>9 分 42 秒</td></tr>
+          <tr><td>话题</td><td>8 / 8</td></tr>
+          <tr><td>追问 / 澄清</td><td>2 / 1</td></tr>
+          <tr><td>本场成本</td><td>¥0.0128</td></tr>
+          <tr><td>首字 P50 / 首音 P50</td><td>812 ms / 1094 ms</td></tr>
+        </table>
+
+        <h4 style="margin-top:18px">逐题：他问的、你怎么答的、可以怎么答</h4>
+        <div class="samples">
+          <div class="sample">
+            <div class="q">Q2 追问：0.0339 元是怎么算的？</div>
+            <div class="a">你答了总数，没拆到输入输出 token。可以说：4.5K 输出 + 18.8K 输入，按官方价目折算。</div>
+          </div>
+          <div class="sample">
+            <div class="q">Q5：为什么不做题库？</div>
+            <div class="a">只说「题库会过期」太薄。补一句：模型按岗位名出了 8 题，比维护 200 道题的题库成本低。</div>
+          </div>
+          <div class="sample">
+            <div class="q">Q7：只有你一个用户，怎么证明有用？</div>
+            <div class="a">别硬撑。承认样本量为 1，说清楚下一步是找 5 个人跑同一套题。</div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <div class="btn-ghost">下载复盘 .md</div>
+          <div class="btn-primary">再练一场</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+</div>
+</body>
+</html>
