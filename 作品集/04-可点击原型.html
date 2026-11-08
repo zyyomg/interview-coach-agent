@@ -87,6 +87,32 @@
   .start:hover{background:#000}
   .foot{font-size:10.5px; color:var(--ink3); text-align:center; margin-top:12px}
 
+  /* ---------- 正式档：简历 + 作品集 ---------- */
+  .mats{margin:-4px 0 16px}
+  .mats[hidden]{display:none}
+  .mat{border:1px dashed var(--line2); border-radius:10px; padding:10px 12px; background:#fbfaf8}
+  .mat .row{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:3px}
+  .mat b{font-size:12.5px}
+  .mat .ok{font-size:10.5px; color:#1a7f4b}
+  .mat span{display:block; font-size:10.5px; color:var(--ink3); line-height:1.55}
+  .pf{margin-top:10px; padding-top:10px; border-top:1px dashed var(--line2)}
+  .pfhead{display:flex; align-items:center; gap:6px; margin-bottom:7px}
+  .pfhead b{font-size:12.5px}
+  .pfhead .tag{flex:1; font-size:10.5px; color:var(--ink3)}
+  .mini{font-size:11px; padding:4px 9px; border-radius:7px; border:1px solid var(--line2);
+    background:#fff; color:var(--ink2); cursor:pointer; font-family:inherit}
+  .mini:hover{border-color:var(--acc); color:var(--acc)}
+  .pfi{display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line2);
+    border-radius:8px; background:#fff; margin-bottom:5px}
+  .pfi em{flex:1; min-width:0; font-style:normal; font-size:11.5px; color:var(--ink2);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .pfi i{font-style:normal; font-size:10.5px; color:var(--ink3); font-variant-numeric:tabular-nums}
+  .pfi .x{color:var(--ink3); font-size:13px; cursor:pointer; line-height:1}
+  .pfi .x:hover{color:#c0392b}
+  .pfnote{font-size:10.5px; color:#1a7f4b; line-height:1.5; margin-top:6px}
+  .hint{font-size:10.5px; color:var(--ink3); line-height:1.5; margin:-8px 0 16px}
+  .hint.on{color:var(--acc)}
+
   /* ---------- 对话 ---------- */
   .hud{
     display:flex; gap:6px; padding:9px 18px; border-bottom:1px solid var(--line);
@@ -200,8 +226,28 @@
 
       <div class="lab">面试方式</div>
       <div class="chips" id="formChips">
-        <button class="chip on" data-f="体验式">体验式 · 不带简历</button>
-        <button class="chip" data-f="正式">正式 · 读简历</button>
+        <button class="chip on" data-f="体验式">体验式</button>
+        <button class="chip" data-f="正式">正式</button>
+      </div>
+      <p id="formHint" class="hint">不带材料，按岗位通用题问，随手练</p>
+
+      <div class="mats" id="matBox" hidden>
+        <div class="mat">
+          <div class="row"><b>简历</b><span class="ok">已读 1,240 字</span></div>
+          <span>陈默_AI产品经理.pdf · 正文不落盘，提问时随提示词发给模型</span>
+        </div>
+
+        <div class="pf">
+          <div class="pfhead">
+            <b>作品集</b><span class="tag">可选 · 可多选</span>
+            <button class="mini" id="pfAdd" type="button">＋ 文件</button>
+          </div>
+          <div id="pfList">
+            <div class="pfi"><em>02-需求说明书.md</em><i>5,666 字</i><span class="x">×</span></div>
+            <div class="pfi"><em>03-验收测试报告.md</em><i>3,558 字</i><span class="x">×</span></div>
+          </div>
+          <div class="pfnote">共 2 份 · 9,224 字 · 面试官看前 1600 字（每份都留开头）</div>
+        </div>
       </div>
 
       <button class="start" id="go">开始对练</button>
@@ -324,7 +370,40 @@
   });
   single('roundChips');
   single('levelChips');
-  single('formChips');
+
+  // 正式才展开材料区：原型里把作品集也放进去了，和真实产品一致
+  var matBox = document.getElementById('matBox');
+  var formHint = document.getElementById('formHint');
+  single('formChips', function(b){
+    var formal = b.dataset.f === '正式';
+    matBox.hidden = !formal;
+    formHint.textContent = formal ? '读简历和作品集，从项目里挑着问' : '不带材料，按岗位通用题问，随手练';
+    formHint.classList.toggle('on', formal);
+  });
+
+  var pfList = document.getElementById('pfList');
+  matBox.addEventListener('click', function(e){
+    if (e.target.id === 'pfAdd'){
+      var row = document.createElement('div');
+      row.className = 'pfi';
+      row.innerHTML = '<em>01-需求树.md</em><i>1,120 字</i><span class="x">×</span>';
+      pfList.appendChild(row);
+      paintPf();
+      return;
+    }
+    if (e.target.classList.contains('x')){
+      var it = e.target.closest('.pfi');
+      if (it) it.remove();
+      paintPf();
+    }
+  });
+
+  function paintPf(){
+    var n = pfList.querySelectorAll('.pfi').length;
+    document.querySelector('#matBox .pfnote').textContent = n
+      ? '共 ' + n + ' 份 · 面试官看前 1600 字（每份都留开头）· 不写入会话记录'
+      : '还没加作品集。加了它就会挑作品集里的东西问';
+  }
 
   input.addEventListener('input', function(){
     var v = input.value.trim();

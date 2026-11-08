@@ -15,6 +15,12 @@
   const resumeFile = $('resumeFile');
   const resumePaste = $('resumePaste');
   const resumeMeta = $('resumeMeta');
+  const pfAddBtn = $('pfAddBtn');
+  const pfPasteBtn = $('pfPasteBtn');
+  const pfFile = $('pfFile');
+  const pfPaste = $('pfPaste');
+  const pfList = $('pfList');
+  const pfMeta = $('pfMeta');
   const roleInput = $('roleInput');
   const roleSeg = $('roleSeg');
   const roleHistBtn = $('roleHistBtn');
@@ -31,6 +37,11 @@
     form: 'casual',       // casual 体验式（不带简历）/ formal 正式（必须带简历）
     resumeText: '',       // 解析/粘贴出来的简历正文
     resumeName: '',
+    portfolio: [],        // 作品集：可以多份，[{name, chars, text}]
+    pfText: '',           // 合并后发给服务端的正文（每份带【作品集N：文件名】标记）
+    pfName: '',           // 文件名拼起来，只用于落盘记录
+    pfLimit: 1600,        // 进提示词的字数，由 /api/health 下发，只用于提示
+    pfMaxFiles: 6,
     role: 'general',      // 只有一个预设：通用
     roleTitle: '',        // 自己写的岗位名；有值时优先于 role
     rounds: 8,
@@ -924,6 +935,118 @@
     }).catch(() => setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad'));
   }
 
+  /* ---- 作品集：一份不够，作品集天然是多份文件 ---- */
+
+  function pfTotal() {
+    return S.portfolio.reduce((n, f) => n + f.chars, 0);
+  }
+
+  // 合并成一段给后端。每份前面加标记：后端按标记分配提示词字数，
+  // 不会因为第一份太长就把后面几份全挤掉。
+  function buildPortfolio() {
+    const parts = S.portfolio.map(
+      (f, i) => `【作品集${i + 1}：${f.name}】\n${f.text}`);
+    const extra = (pfPaste.value || '').trim();
+    if (extra) parts.push(`【作品集补充说明】\n${extra}`);
+    S.pfText = parts.join('\n\n');
+    S.pfName = S.portfolio.length
+      ? S.portfolio.map((f) => f.name).join('、').slice(0, 200)
+      : (extra ? '粘贴的作品集说明' : '');
+  }
+
+  function paintPortfolio() {
+    pfList.innerHTML = '';
+    pfList.hidden = S.portfolio.length === 0;
+    S.portfolio.forEach((f, i) => {
+      const row = document.createElement('div');
+      row.className = 'pf-item';
+      const name = document.createElement('span');
+      name.className = 'pf-name';
+      name.textContent = f.name;
+      name.title = f.name;
+      const n = document.createElement('span');
+      n.className = 'pf-n';
+      n.textContent = `${(f.chars || 0).toLocaleString()} 字`;
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'pf-x';
+      x.title = '移除这份';
+      x.textContent = '×';
+      x.addEventListener('click', () => {
+        S.portfolio.splice(i, 1);
+        buildPortfolio();
+        paintPortfolio();
+      });
+      row.appendChild(name);
+      row.appendChild(n);
+      row.appendChild(x);
+      pfList.appendChild(row);
+    });
+
+    const chars = pfTotal() + (pfPaste.value || '').trim().length;
+    if (!chars) {
+      pfMeta.textContent = '还没加作品集。加了它就会挑作品集里的东西问';
+      pfMeta.className = 'resume-meta';
+      return;
+    }
+    const n = S.portfolio.length;
+    pfMeta.textContent =
+      (n ? `共 ${n} 份 · ` : '粘贴内容 · ') + `${chars.toLocaleString()} 字 · 面试官看前 ${S.pfLimit} 字`
+      + (n > 1 ? '（每份都留开头）' : '') + ' · 不写入会话记录';
+    pfMeta.className = 'resume-meta ok';
+  }
+
+  async function addPortfolioFiles(files) {
+    const picked = Array.from(files || []);
+    if (!picked.length) return;
+    const room = S.pfMaxFiles - S.portfolio.length;
+    if (room <= 0) {
+      tip(`作品集最多 ${S.pfMaxFiles} 份，先移掉一份再加。`);
+      return;
+    }
+    const batch = picked.slice(0, room);
+    if (picked.length > room) tip(`最多 ${S.pfMaxFiles} 份，这次只加了前 ${room} 份。`);
+
+    let failed = 0, lastHint = '';
+    pfMeta.textContent = '正在读取…';
+    pfMeta.className = 'resume-meta';
+    // 逐个解析，不并发：文件不多，串行能保证列表顺序和选择顺序一致
+    for (const file of batch) {
+      if (file.size > 4 * 1024 * 1024) {
+        failed += 1; lastHint = `${file.name} 超过 4MB`;
+        continue;
+      }
+      try {
+        const b64 = await fileToBase64(file);
+        const res = await fetch('/api/resume/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, data: b64, kind: 'portfolio' }),
+        });
+        const d = await res.json();
+        if (!d.ok) {
+          failed += 1; lastHint = d.hint || '读不出来';
+          continue;
+        }
+        // 同名视作替换：重新选一次同一个文件不该出现两行
+        S.portfolio = S.portfolio.filter((x) => x.name !== (d.name || file.name));
+        S.portfolio.push({
+          name: d.name || file.name, chars: d.chars || 0, text: d.text || '',
+        });
+      } catch (e) {
+        failed += 1; lastHint = '读取失败';
+      }
+    }
+    buildPortfolio();
+    paintPortfolio();
+    if (failed) {
+      pfMeta.textContent = `${failed} 份没读出来：${lastHint}（其余已加上）`;
+      pfMeta.className = 'resume-meta bad';
+      tip(`作品集有 ${failed} 份没读出来：${lastHint}`);
+    }
+  }
+
+
   // ---- 岗位 / 面试方式 ----
   function roleLabel() {
     return (S.roleTitle || ROLE_LABEL[S.role] || ROLE_LABEL.general).trim();
@@ -1004,15 +1127,15 @@
     roleHistBtn.classList.toggle('on', next);
   }
 
-  // 体验式 / 正式：只有正式才展开简历区。
+  // 体验式 / 正式：只有正式才展开简历和作品集。
   // 这里不再是"按简历提问"的开关——那样会让人以为岗位选择没用，
   // 两档本来就该是两种面试：随手练 vs 拿简历真打。
   function applyForm() {
     const formal = S.form === 'formal';
     resumeBox.hidden = !formal;
     formHint.textContent = formal
-      ? '读你的简历，从项目里挑着问'
-      : '不带简历，按岗位通用题问，随手练';
+      ? '读简历和作品集，从项目里挑着问'
+      : '不带材料，按岗位通用题问，随手练';
     formHint.classList.toggle('on', formal);
     if (formal && !S.resumeText) {
       setTimeout(() => { try { resumePaste.focus(); } catch (e) {} }, 60);
@@ -1023,11 +1146,13 @@
     if (S.form === 'formal') {
       const text = (resumePaste.value || '').trim();
       if (text.length < 60) {
-        tip('正式面试要读简历：先选一个 .docx，或把简历文字粘上去。只想随手练，就切回「体验式」。');
+        tip('正式面试要读简历：先选一个 .docx / .pdf，或把简历文字粘上去。'
+            + '只想随手练，就切回「体验式」。');
         return;
       }
       S.resumeText = text;
       S.resumeName = S.resumeName || '粘贴的简历';
+      buildPortfolio();        // 粘贴框可能改过，开局前统一合并一次
     }
     S.busy = true;
     startBtn.disabled = true;
@@ -1073,6 +1198,9 @@
         role: S.roleTitle || S.role, rounds: S.rounds, level: S.level, form: S.form,
         resume_text: S.form === 'formal' ? S.resumeText : '',
         resume_name: S.form === 'formal' ? S.resumeName : '',
+        portfolio_text: S.form === 'formal' ? S.pfText : '',
+        portfolio_name: S.form === 'formal' ? S.pfName : '',
+        portfolio_files: S.form === 'formal' ? S.portfolio.length : 0,
       }, (ev) => {
         if (ev.t === 'session') {
           S.session = ev.id;
@@ -1086,10 +1214,13 @@
           // 开场白也要能被打断：不在这里开麦，等它念完才开，
           // 用户在开场白期间说的话就全丢了（"第一句前半段没录进去"）
           if (S.voice) startRec();
+          const pfLine = ev.portfolio
+            ? ` + 作品集 ${ev.portfolio_files} 份 ${ev.portfolio_chars} 字`
+            : '';
           tip(S.mock
             ? '演示模式：没有检测到模型 Key，面试官由本地脚本扮演。配好 <b>DEEPSEEK_API_KEY</b> 后重启即可换成真模型。'
             : (S.form === 'formal'
-              ? `正式面试 · 已读 ${ev.resume_chars} 字 · 面试官会从简历里挑项目提问`
+              ? `正式面试 · 已读简历 ${ev.resume_chars} 字${pfLine} · 面试官会从材料里挑项目提问`
               : `体验式 · ${ev.role_name || roleLabel()} · ${S.rounds} 个话题 · 一场约 ¥0.03`));
         } else {
           handleEvent(ev);
@@ -1311,9 +1442,15 @@
       ol.appendChild(li);
     });
 
+    const mat = m.material || {};
+    const matText = mat.portfolio_files
+      ? `简历 ${mat.resume_chars || 0} 字 + 作品集 ${mat.portfolio_files} 份 ${mat.portfolio_chars || 0} 字`
+      : (mat.resume_chars ? `简历 ${mat.resume_chars} 字` : '无（按岗位通用题）');
+
     const rows = [
       ['时长', (m.duration_s || 0) + ' 秒'],
       ['面试方式', m.form_name || '—'],
+      ['参考材料', matText],
       ['难度', m.level_name || '标准'],
       ['话题', `${m.questions || 0} / ${m.max_questions || 0}`],
       ['回答轮次', `${m.user_turns || 0}（澄清 ${(m.actions || {}).clarify || 0}）`],
@@ -1564,13 +1701,29 @@
     }
   });
 
+  /* 作品集：＋文件 走同一个解析接口，只是传 kind=portfolio（读不出时提示说「作品集」） */
+  pfAddBtn.addEventListener('click', () => pfFile.click());
+  pfFile.addEventListener('change', (e) => {
+    addPortfolioFiles(e.target.files);
+    e.target.value = '';            // 清空，才能再选同一个文件
+  });
+  pfPasteBtn.addEventListener('click', () => {
+    const show = pfPaste.hidden;
+    pfPaste.hidden = !show;
+    pfPasteBtn.textContent = show ? '收起' : '粘贴';
+    if (show) setTimeout(() => { try { pfPaste.focus(); } catch (e) {} }, 40);
+  });
+  pfPaste.addEventListener('input', () => {
+    buildPortfolio();
+    paintPortfolio();
+  });
+
   sendBtn.addEventListener('click', () => {
     const v = input.value.trim();
     if (!v) return;
     clearInput();
     sendTurn(v, false);
   });
-
   input.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing) return;
     if (e.shiftKey) return;                 // Shift+Enter 换行，不发送
@@ -1821,6 +1974,10 @@
       if (h.silence_seconds) S.nudgeMs = h.silence_seconds * 1000;
       if (h.silence_close_seconds) S.closeMs = h.silence_close_seconds * 1000;
       if (h.turn_silence_seconds) S.silenceMs = h.turn_silence_seconds * 1000;
+      // 作品集能进提示词多少字、最多几份，都跟随后端配置，前端不写死
+      if (h.portfolio_chars) S.pfLimit = h.portfolio_chars;
+      if (h.portfolio_max_files) S.pfMaxFiles = h.portfolio_max_files;
+      paintPortfolio();
       const dot = $('modeDot');
       dot.classList.add(S.mock ? 'mock' : 'live');
       $('modeText').textContent = S.mock
@@ -1847,5 +2004,6 @@
   loadHistory();
   paintRole();       // 空状态标题跟着岗位走，选了「数据分析师」就显示它
   paintRoleHistory();
+  paintPortfolio();
   applyForm();       // 体验式默认不展开简历区
 })();

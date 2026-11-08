@@ -456,7 +456,7 @@ def run_resume(cfg) -> dict:
     prompt = ag.system_prompt()
     rows.append({
         "note": "简历进系统提示词",
-        "ok": text in prompt and "用简历的规则" in prompt,
+        "ok": text in prompt and "看材料的规则" in prompt,
         "detail": f"{len(prompt)} 字",
     })
 
@@ -472,8 +472,8 @@ def run_resume(cfg) -> dict:
     ag2 = A.InterviewAgent(cfg, "resume-test-2", "ai_pm", 6, A.LLMClient(cfg, force_mock=True))
     rows.append({
         "note": "关掉开关就回通用开场",
-        "ok": "用简历的规则" not in ag2.system_prompt(),
-        "detail": "无简历时不注入",
+        "ok": "看材料的规则" not in ag2.system_prompt(),
+        "detail": "无材料时不注入",
     })
 
     # 岗位：三个预设之外要能自己写。这条守的是「只想面产品经理」以外的人——
@@ -512,6 +512,65 @@ def run_resume(cfg) -> dict:
                and "本场没有简历" not in prompt
                and ag2.form == "casual" and ag.form == "formal"),
         "detail": "有简历时不出现",
+    })
+
+    # ---- 作品集：作品集是多份文件，一条按总字数截断会把后面几份全挤掉 ----
+    pf_text = ("【作品集1：需求说明书.docx】\n" + "需求背景与判定顺序。" * 300
+               + "\n\n【作品集2：验收测试报告.docx】\n" + "用例 10 条，3 个缺陷。" * 300)
+    pfa = A.InterviewAgent(cfg, "pf-test", "ai_pm", 6, A.LLMClient(cfg, force_mock=True),
+                           resume_text=text, resume_name="测试.docx",
+                           portfolio_text=pf_text,
+                           portfolio_name="需求说明书.docx、验收测试报告.docx",
+                           portfolio_files=2)
+    pf_prompt = pfa.system_prompt()
+    pf_limit = int((cfg.get("portfolio") or {}).get("max_chars", 1600))
+    rows.append({
+        "note": "作品集按份节选进提示词",
+        "ok": ("【作品集（共 2 份" in pf_prompt
+               and pfa.portfolio_used.count("【作品集") == 2
+               and "需求说明书" in pf_prompt and "验收测试报告" in pf_prompt
+               and len(pfa.portfolio_used) <= pf_limit),
+        "detail": f"{len(pfa.portfolio_used)}/{pf_limit} 字，两份都留了开头",
+    })
+
+    rows.append({
+        "note": "作品集规则要求从作品集出题",
+        "ok": ("用作品集的规则" in pf_prompt
+               and "至少挑 1 个话题从作品集里出" in pf_prompt
+               and "不要问「你的作品集讲了什么」" in pf_prompt),
+        "detail": "跟进「怎么做的」，不是「讲了什么」",
+    })
+
+    evs2 = []
+    pfa.begin(lambda e: evs2.append(e))
+    pf_reason = next((e.get("reason", "") for e in evs2 if e.get("t") == "meta"), "")
+    rows.append({
+        "note": "开场从简历 + 作品集里挑",
+        "ok": "作品集" in pf_reason,
+        "detail": pf_reason,
+    })
+
+    only_pf = A.InterviewAgent(cfg, "pf-test-2", "general", 6,
+                               A.LLMClient(cfg, force_mock=True),
+                               portfolio_text=pf_text, portfolio_files=2)
+    rows.append({
+        "note": "只有作品集也当正式场",
+        "ok": (only_pf.form == "formal" and "【作品集" in only_pf.system_prompt()
+               and "本场没有简历" in only_pf.system_prompt()),
+        "detail": only_pf.form_name,
+    })
+
+    rows.append({
+        "note": "没材料就不提作品集",
+        "ok": "作品集" not in ag2.system_prompt(),
+        "detail": "体验式提示词里没有这个词",
+    })
+
+    pf_empty = S.parse_resume("空.txt", "太短".encode(), "portfolio")
+    rows.append({
+        "note": "作品集读不出时说「作品集」",
+        "ok": (not pf_empty.get("ok")) and "作品集" in str(pf_empty.get("hint", "")),
+        "detail": str(pf_empty.get("hint", ""))[:22],
     })
     return {"ok": all(x["ok"] for x in rows), "rows": rows}
 

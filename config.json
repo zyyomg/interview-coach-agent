@@ -48,6 +48,16 @@
     "silence_seconds": 4.5
   },
 
+  "resume": {
+    "max_chars": 1800
+  },
+
+  "portfolio": {
+    "max_chars": 1600,
+    "max_files": 6,
+    "_note": "作品集是多份文件，进提示词的字数按份分配（每份先保底，余额补给前面的），不是按总字数截前 1600 字。加作品集后一场输入 token 大约多 1800，成本仍在 ¥0.02 量级"
+  },
+
   "price": {
     "input_miss": 2.0,
     "input_hit": 0.04,

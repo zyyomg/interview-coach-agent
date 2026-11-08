@@ -335,6 +335,8 @@ MOCK_CLOSE = "今天先到这儿，我整理一下。"
 
 # 演示模式没有模型，读不懂简历，但这句至少不会穿帮：它只说“从简历里挑”，不编具体项目
 MOCK_OPEN_RESUME = "简历我看过了，先挑一个你最想聊的项目，讲讲你具体负责哪块。"
+# 带了作品集：同样不能编项目名，只说“材料里挑一个”
+MOCK_OPEN_MATERIAL = "材料我看过了，先挑一个你最想聊的项目，讲讲你具体负责哪块。"
 
 _FILLER = re.compile(
     r"^(我觉得|我认为|我感觉|我负责|我做了|我做过|我们|然后|后来|当时|那个|就是说|其实|反正|大概|我)+"
@@ -356,6 +358,39 @@ def _clean_role_title(raw: str, limit: int = 16) -> str:
     t = _ROLE_BAD.sub("", str(raw or ""))
     t = re.sub(r"\s+", " ", t).strip()
     return t[:limit].strip()
+
+
+# 作品集是多份文件拼起来的，前端用这个标记分段：`【作品集1：需求说明书.docx】`
+_PF_SEG = re.compile(r"(?=【作品集\s*\d+\s*[：:])")
+
+
+def _trim_portfolio(text: str, limit: int) -> str:
+    """按份分配字数，而不是一刀切前 N 字。
+
+    作品集天然是多份文件：一份需求说明书动辄几千字，直接截前 1600 字，
+    模型只会看到第一份的「项目背景」，后面几份一个字都进不去——那就等于
+    只上传了一份。这里每份先保底分一段，余额再补给前面的文件。
+    """
+    text = (text or "").strip()
+    if not text or limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    segs = [s.strip() for s in _PF_SEG.split(text) if s.strip()]
+    if len(segs) <= 1:
+        return text[:limit]
+    per = max(200, limit // len(segs))
+    out, used = [], 0
+    for seg in segs:
+        piece = seg[:per]
+        if used + len(piece) > limit:
+            piece = piece[: max(0, limit - used)]
+        if piece.strip():
+            out.append(piece.strip())
+        used += len(piece)
+        if used >= limit:
+            break
+    return "\n\n".join(out)[:limit]
 
 
 def _snip(text: str, n: int = 12) -> str:
@@ -520,15 +555,20 @@ class LLMClient:
             kw = ""              # 太短或本身就是"没做过"，别复述了
         # "收尾"要放在最前面判：收尾的指令里常带"不要追问"这类话，
         # 先匹配"追问"就会把收尾演成一次追问（演示模式实测踩到过）
-        # 简历模式只能从系统提示词判断：_mock_stream 挂在 LLMClient 上，
-        # 拿不到 InterviewAgent 的 resume 字段。
-        has_resume = "用简历的规则" in system
+        # 材料模式只能从系统提示词判断：_mock_stream 挂在 LLMClient 上，
+        # 拿不到 InterviewAgent 的 resume / portfolio 字段。
+        has_resume = "【简历】" in system
+        has_pf = "【作品集" in system
         if "收尾" in directive:
             line = MOCK_CLOSE
-        # 简历开场要排在「追问」前面：开场指令里有“最值得追问的项目”，
+        # 材料开场要排在「追问」前面：开场指令里有“最值得追问的项目”，
         # 先匹配追问就会把开场演成一次追问（实测踩到：开场问了句“有数据吗”）
+        elif has_pf and has_resume and "第 1 个话题" in directive:
+            line = MOCK_OPEN_MATERIAL
         elif has_resume and "第 1 个话题" in directive:
             line = MOCK_OPEN_RESUME
+        elif has_pf and "第 1 个话题" in directive:
+            line = MOCK_OPEN_MATERIAL
         elif "追问" in directive:
             if kw:
                 line = MOCK_PROBES_ECHO[(qidx + len(user_msgs)) % len(MOCK_PROBES_ECHO)].format(kw=kw)
@@ -564,7 +604,8 @@ class InterviewAgent:
     def __init__(self, cfg: dict, session_id: str, role_key: str = "ai_pm",
                  max_questions: int | None = None, llm: LLMClient | None = None,
                  level: str = "normal", resume_text: str = "", resume_name: str = "",
-                 form: str = ""):
+                 form: str = "", portfolio_text: str = "", portfolio_name: str = "",
+                 portfolio_files: int = 0):
         self.cfg = cfg
         self.session_id = session_id
         # 岗位：ai_pm / pm / general 三个预设之外，允许直接把岗位名传进来。
@@ -585,10 +626,11 @@ class InterviewAgent:
         self.level_key = level if level in (cfg.get("levels") or {}) else "normal"
         self.level = level_cfg(cfg, self.level_key)
 
-        # 面试方式：casual 体验式（不带简历）/ formal 正式（读简历）。
-        # 不传就按有没有简历推——旧的调用方（selftest、tools）不用改。
+        # 面试方式：casual 体验式（不带材料）/ formal 正式（读简历和作品集）。
+        # 不传就按有没有材料推——旧的调用方（selftest、tools）不用改。
         self.form = form if form in ("casual", "formal") else (
-            "formal" if (resume_text or "").strip() else "casual"
+            "formal" if (resume_text or "").strip() or (portfolio_text or "").strip()
+            else "casual"
         )
         self.form_name = "正式面试" if self.form == "formal" else "体验式"
 
@@ -599,6 +641,15 @@ class InterviewAgent:
         self.resume_name = (resume_name or "").strip()
         self.resume_limit = int((cfg.get("resume") or {}).get("max_chars", 1800))
         self.resume_used = self.resume[: self.resume_limit]
+
+        # 作品集：和简历一样只节选进提示词，但配额按「份」分配（见 _trim_portfolio）。
+        # 只传了作品集没传简历也认——有人就是想拿作品集当主材料聊。
+        pf_cfg = cfg.get("portfolio") or {}
+        self.portfolio = (portfolio_text or "").strip()
+        self.portfolio_name = (portfolio_name or "").strip()
+        self.portfolio_files = max(0, int(portfolio_files or 0))
+        self.portfolio_limit = int(pf_cfg.get("max_chars", 1600))
+        self.portfolio_used = _trim_portfolio(self.portfolio, self.portfolio_limit)
 
         self.history = []            # 给模型的消息（assistant / user）
         self.turns = []              # 每轮判定记录
@@ -632,29 +683,59 @@ class InterviewAgent:
             )
         # 没简历时它爱顺口来一句「你简历上写的那个项目」。当场没人给过简历，
         # 这句一出整场就假了，所以直接说不许提。
-        no_resume_line = "" if self.resume_used else (
+        has_resume = bool(self.resume_used)
+        has_pf = bool(self.portfolio_used)
+        no_resume_line = "" if has_resume else (
             "本场没有简历：不要提「简历」「履历」，也不要假装看过。\n"
         )
-        resume_block = ""
-        if self.resume_used:
-            resume_block = (
-                "\n候选人的简历（原文节选，只给你出题和追问用，不要照读）：\n"
-                "<<<\n"
-                f"{self.resume_used}\n"
-                ">>>\n"
-                "用简历的规则：\n"
-                "8. 第 1 个话题必须从简历里挑一个最值得追问的项目或经历，不要问泛泛的自我介绍。\n"
-                "9. 追问可以引用简历里的项目名、指标、时间，逼他把简历上的说法讲具体。\n"
-                "10. 简历没写的不要编；写了但含糊的地方，优先追问。\n"
-                "11. 不评价简历写得好不好，也不逐条念简历。\n"
-            )
+
+        material = ""
+        if has_resume or has_pf:
+            material = "\n候选人提交的材料（只给你出题和追问用，不要照读）：\n"
+            if has_resume:
+                material += f"【简历】\n<<<\n{self.resume_used}\n>>>\n"
+            if has_pf:
+                tag = (f"【作品集（共 {self.portfolio_files} 份，下面是各份的节选）】"
+                       if self.portfolio_files > 1 else "【作品集】")
+                material += f"{tag}\n<<<\n{self.portfolio_used}\n>>>\n"
+
+        # 材料相关规则从 8 开始编号。条目多少取决于有没有作品集，
+        # 编号就不能写死——没简历却从第 12 条讲起，模型会以为前面被截掉了。
+        n = 8
+        blocks = []
+
+        def add_block(title, items):
+            nonlocal n
+            lines = [title]
+            for it in items:
+                lines.append(f"{n}. {it}")
+                n += 1
+            blocks.append("\n".join(lines) + "\n")
+
+        if has_resume or has_pf:
+            add_block("看材料的规则：", [
+                "第 1 个话题直接从材料里挑一个最值得追问的项目，不要问泛泛的自我介绍。",
+                "追问要引用材料里的项目名、指标、时间、做法，逼他把写下来的说法讲具体。",
+                "材料里没写的不要编；写了但含糊、前后对不上的地方，优先追问。",
+                "不评价材料写得好不好，也不逐条念材料。",
+            ])
+        if has_pf:
+            add_block("用作品集的规则：", [
+                "作品集是他自己做的产出（文档、报告、原型、数据），"
+                + ("至少挑 1 个话题从作品集里出，不要全问简历。" if has_resume
+                   else "话题优先从作品集里出。"),
+                "问作品集时问「为什么这么设计」「这个数怎么算的」「换一种做法会怎样」，"
+                "不要问「你的作品集讲了什么」。",
+            ])
+
         return (
             f"你是一场「{self.role_name}」岗位的模拟面试官，正在和候选人做语音面试。\n"
             f"本次共 {self.max_questions} 个话题，现在是第 {max(1, self.question_index)} 个。\n"
             + (f"本场难度：{depth}\n" if depth else "")
             + role_line
             + no_resume_line
-            + resume_block
+            + material
+            + "".join(blocks)
             + "说话规则：\n"
             "1. 每次只说一句话：一个提问，或一句追问。不寒暄、不点评、不一次问两件事。\n"
             "2. 口语、短句，20–45 字。不用列表、不用 markdown、不用括号补充。\n"
@@ -737,13 +818,26 @@ class InterviewAgent:
         self.turn_seq += 1
         self.question_index = 1
         turn_id = self.turn_seq
+        if self.portfolio_used and self.resume_used:
+            open_note = "开场第 1 个话题（按简历 + 作品集）"
+        elif self.portfolio_used:
+            open_note = "开场第 1 个话题（按作品集）"
+        elif self.resume_used:
+            open_note = "开场第 1 个话题（按简历）"
+        else:
+            open_note = "开场第 1 个话题"
         emit({
             "t": "meta", "turn": turn_id, "action": ASK, "label": LABEL[ASK],
-            "reason": "开场第 1 个话题（按简历）" if self.resume_used else "开场第 1 个话题",
+            "reason": open_note,
             "question": self.question_index,
             "max_question": self.max_questions, "role": self.role_name,
         })
-        if self.resume_used:
+        if self.portfolio_used and self.resume_used:
+            directive = ("面试开始。先从简历或作品集里挑一个最值得追问的项目，"
+                         "直接提出第 1 个话题，一句话。")
+        elif self.portfolio_used:
+            directive = "面试开始。先从作品集里挑一个最值得追问的项目，直接提出第 1 个话题，一句话。"
+        elif self.resume_used:
             directive = "面试开始。先从简历里挑一个最值得追问的项目，直接提出第 1 个话题，一句话。"
         else:
             directive = "面试开始。请直接提出第 1 个话题，一句话。"
@@ -1051,6 +1145,11 @@ class InterviewAgent:
             "level_name": self.level.get("name", "标准"),
             "form": self.form,
             "form_name": self.form_name,
+            "material": {
+                "resume_chars": len(self.resume_used),
+                "portfolio_chars": len(self.portfolio_used),
+                "portfolio_files": self.portfolio_files,
+            },
         }
 
     # -- 复盘 --------------------------------------------------------
@@ -1288,6 +1387,13 @@ class InterviewAgent:
                 "chars": len(self.resume),
                 "in_prompt_chars": len(self.resume_used),
             },
+            # 作品集同理：只留份数、文件名、字数
+            "portfolio": {
+                "name": self.portfolio_name,
+                "files": self.portfolio_files,
+                "chars": len(self.portfolio),
+                "in_prompt_chars": len(self.portfolio_used),
+            },
         }
 
     def save(self, runs_dir: Path, report: dict | None = None) -> Path:
@@ -1315,6 +1421,15 @@ def render_markdown(report: dict) -> str:
 
     def ms(v):
         return f"{v:.0f} ms" if isinstance(v, (int, float)) else "—"
+
+    # 这场面试官手上有哪些材料：复盘里要能看出「分数是按什么问出来的」
+    mat = m.get("material") or {}
+    mat_cell = ""
+    if mat.get("portfolio_files"):
+        mat_cell = (f"简历 {mat.get('resume_chars', 0)} 字 + "
+                    f"作品集 {mat['portfolio_files']} 份 {mat.get('portfolio_chars', 0)} 字")
+    elif mat.get("resume_chars"):
+        mat_cell = f"简历 {mat.get('resume_chars', 0)} 字"
 
     # 往下翻报告的人先要知道这是哪种面试：体验式（通用题）和正式（读简历）的
     # 分数不该被当成同一件事看
@@ -1346,6 +1461,7 @@ def render_markdown(report: dict) -> str:
         f"| 平均回答 | {m.get('avg_answer_chars', 0)} 字 |",
         f"| 追问 / 换题 | {m.get('actions', {}).get('probe', 0)} / {m.get('actions', {}).get('switch', 0)} |",
         f"| 澄清触发率 | {m.get('clarify_rate', 0) * 100:.0f}% |",
+        *([f"| 参考材料 | {mat_cell} |"] if mat_cell else []),
         "",
         "### 延迟（说完 → 各节点）",
         "| 指标 | P50 | P95 |",

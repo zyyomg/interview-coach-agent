@@ -52,15 +52,19 @@ VERSION = "0.1"
 
 RESUME_MAX_BYTES = 5 * 1024 * 1024        # 简历文件上限，超过就不是简历了
 RESUME_MAX_CHARS = 20000                 # 解析后保留的字数，防粘贴一整本书
+# 作品集是多份文件拼起来的，单份按简历的额度读，合并后另设一个上限：
+# 再多也没用——进提示词的只有 config 里 portfolio.max_chars 那点字。
+PORTFOLIO_MAX_CHARS = 30000
+PORTFOLIO_MAX_FILES = int((CONFIG.get("portfolio") or {}).get("max_files", 6))
 
 
-def _clean_resume(text: str) -> str:
+def _clean_resume(text: str, limit: int = RESUME_MAX_CHARS) -> str:
     """把解析出来的简历压干净：去零宽字符、压掉多余空行、限制长度。"""
     t = (text or "").replace("\u200b", "").replace("\ufeff", "").replace("\xa0", " ")
     t = re.sub(r"[ \t]+\n", "\n", t)
     t = re.sub(r"\n{3,}", "\n\n", t)
     t = re.sub(r"[ \t]{2,}", " ", t)
-    return t.strip()[:RESUME_MAX_CHARS]
+    return t.strip()[:limit]
 
 
 def _decode_text(raw: bytes) -> str:
@@ -395,8 +399,13 @@ def _pdf_text(raw: bytes) -> tuple:
     return text, "builtin" if _pdf_text_ok(text) else "none"
 
 
-def parse_resume(name: str, raw: bytes) -> dict:
-    """解析简历文件。返回 {ok, text, chars} 或 {ok: False, kind, hint}。"""
+def parse_resume(name: str, raw: bytes, what: str = "resume") -> dict:
+    """解析简历或作品集文件。返回 {ok, text, chars} 或 {ok: False, kind, hint}。
+
+    解析逻辑完全一样（都是"从文档里抽字"），只有出错提示要分清在看什么：
+    选作品集时弹一句"可能是图片型简历"，用户会以为自己选错文件了。
+    """
+    noun = "作品集" if what == "portfolio" else "简历"
     ext = (name.rsplit(".", 1)[-1] if "." in name else "").lower()
     if ext not in ("docx", "pdf", "txt", "md", "markdown"):
         return {
@@ -417,7 +426,7 @@ def parse_resume(name: str, raw: bytes) -> dict:
                         "用 Word/WPS 打开另存为 .docx，或把文字粘到下面。",
             }
         return {"ok": True, "text": text, "chars": len(text), "name": name,
-                "engine": engine}
+                "engine": engine, "kind": what}
     try:
         text = _docx_text(raw) if ext == "docx" else _decode_text(raw)
     except (zipfile.BadZipFile, KeyError, ET.ParseError):
@@ -429,14 +438,16 @@ def parse_resume(name: str, raw: bytes) -> dict:
     if len(text) < 40:
         return {
             "ok": False, "kind": "empty",
-            "hint": "只读到几十个字，可能是图片型简历。把文字复制出来粘贴到下面更稳。",
+            "hint": f"只读到几十个字，可能是图片型{noun}。把文字复制出来粘贴到下面更稳。",
         }
-    return {"ok": True, "text": text, "chars": len(text), "name": name}
+    return {"ok": True, "text": text, "chars": len(text), "name": name, "kind": what}
 
 
 class Session:
     def __init__(self, role: str, rounds: int, level: str = "normal",
-                 resume_text: str = "", resume_name: str = "", form: str = ""):
+                 resume_text: str = "", resume_name: str = "", form: str = "",
+                 portfolio_text: str = "", portfolio_name: str = "",
+                 portfolio_files: int = 0):
         self.id = uuid.uuid4().hex[:12]
         self.lock = threading.Lock()
         self.created = time.time()
@@ -444,6 +455,8 @@ class Session:
             CONFIG, self.id, role, rounds,
             A.LLMClient(CONFIG, force_mock=STATE["mock"]),
             level=level, resume_text=resume_text, resume_name=resume_name, form=form,
+            portfolio_text=portfolio_text, portfolio_name=portfolio_name,
+            portfolio_files=portfolio_files,
         )
 
     def save(self, report: dict | None = None) -> str:
@@ -502,6 +515,8 @@ class Handler(BaseHTTPRequestHandler):
                 "silence_seconds": CONFIG.get("silence_seconds", 5),
                 "silence_close_seconds": CONFIG.get("silence_close_seconds", 5),
                 "turn_silence_seconds": (CONFIG.get("turn") or {}).get("silence_seconds", 4.5),
+                "portfolio_chars": (CONFIG.get("portfolio") or {}).get("max_chars", 1600),
+                "portfolio_max_files": PORTFOLIO_MAX_FILES,
             })
             return
 
@@ -566,18 +581,27 @@ class Handler(BaseHTTPRequestHandler):
             level = str(body.get("level") or CONFIG.get("level") or "normal")
             resume_text = str(body.get("resume_text") or "").strip()[:RESUME_MAX_CHARS]
             resume_name = str(body.get("resume_name") or "").strip()[:120]
+            portfolio_text = str(body.get("portfolio_text") or "").strip()[:PORTFOLIO_MAX_CHARS]
+            portfolio_name = str(body.get("portfolio_name") or "").strip()[:200]
+            try:
+                portfolio_files = int(body.get("portfolio_files") or 0)
+            except (TypeError, ValueError):
+                portfolio_files = 0
+            portfolio_files = max(0, min(PORTFOLIO_MAX_FILES, portfolio_files))
             form = str(body.get("form") or "").strip().lower()
             if form not in ("casual", "formal"):
                 form = "formal" if resume_text else "casual"
             # 「正式」就是读简历，没有简历不该静悄悄降级成体验式——
-            # 用户会以为自己在打正式场，实际问的全是通用题
+            # 用户会以为自己在打正式场，实际问的全是通用题。
+            # 作品集替代不了简历：简历问的是"你这个人"，作品集只是产物。
             if form == "formal" and len(resume_text) < 60:
                 return self._json({
                     "ok": False, "kind": "no_resume",
                     "hint": "正式面试要读简历：先选一个 .docx / .pdf / .txt，或把简历文字粘进去；"
                             "只想随手练就切回「体验式」。",
                 }, 400)
-            return self._start(role, rounds, level, resume_text, resume_name, form)
+            return self._start(role, rounds, level, resume_text, resume_name, form,
+                              portfolio_text, portfolio_name, portfolio_files)
 
         if path == "/api/turn":
             return self._turn(body)
@@ -640,7 +664,9 @@ class Handler(BaseHTTPRequestHandler):
         return emit
 
     def _resume(self, body: dict):
-        """解析简历。文件以 base64 传上来——不引 multipart 解析库，也不落盘。"""
+        """解析简历 / 作品集。文件以 base64 传上来——不引 multipart 解析库，也不落盘。"""
+        what = "portfolio" if str(body.get("kind") or "") == "portfolio" else "resume"
+        noun = "作品集" if what == "portfolio" else "简历"
         name = str(body.get("name") or "resume")
         data = str(body.get("data") or "")
         if not data:
@@ -652,14 +678,18 @@ class Handler(BaseHTTPRequestHandler):
         if len(raw) > RESUME_MAX_BYTES:
             return self._json({
                 "ok": False, "kind": "big",
-                "hint": f"文件超过 {RESUME_MAX_BYTES // 1024 // 1024}MB。简历不该这么大，检查一下是不是选错文件了。",
+                "hint": f"文件超过 {RESUME_MAX_BYTES // 1024 // 1024}MB。"
+                        f"单个{noun}文件不该这么大，检查一下是不是选错了。",
             }, 400)
-        out = parse_resume(name, raw)
+        out = parse_resume(name, raw, what)
         return self._json(out, 200 if out.get("ok") else 400)
 
     def _start(self, role: str, rounds: int, level: str = "normal",
-               resume_text: str = "", resume_name: str = "", form: str = ""):
-        sess = Session(role, rounds, level, resume_text, resume_name, form)
+               resume_text: str = "", resume_name: str = "", form: str = "",
+               portfolio_text: str = "", portfolio_name: str = "",
+               portfolio_files: int = 0):
+        sess = Session(role, rounds, level, resume_text, resume_name, form,
+                       portfolio_text, portfolio_name, portfolio_files)
         with LOCK:
             SESSIONS[sess.id] = sess
         self._open_stream()
@@ -670,7 +700,10 @@ class Handler(BaseHTTPRequestHandler):
               "mode": sess.agent.llm.mode, "form": sess.agent.form,
               "form_name": sess.agent.form_name,
               "resume": bool(sess.agent.resume_used),
-              "resume_chars": len(sess.agent.resume_used)})
+              "resume_chars": len(sess.agent.resume_used),
+              "portfolio": bool(sess.agent.portfolio_used),
+              "portfolio_chars": len(sess.agent.portfolio_used),
+              "portfolio_files": sess.agent.portfolio_files})
         with sess.lock:
             sess.agent.begin(emit)
         sess.save()
