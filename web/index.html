@@ -54,16 +54,15 @@
       <div class="resume-box" id="resumeBox" hidden>
         <label class="resume-drop" id="resumeDrop">
           <input type="file" id="resumeFile" accept=".docx,.pdf,.txt,.md,.markdown" hidden>
-          <b>选简历文件</b>
+          <b>选简历文件，或拖到这里</b>
           <span>.docx / .pdf / .txt / .md</span>
         </label>
         <textarea id="resumePaste" rows="4" placeholder="也可以把简历正文粘贴到这里……（扫描件、图片型 PDF 只能粘贴）"></textarea>
         <div class="resume-meta" id="resumeMeta">还没读到内容</div>
 
-        <div class="pf">
+        <div class="pf" id="pfBox">
           <div class="pf-head">
             <b>作品集</b>
-            <span class="pf-tag">可选 · 可多选</span>
             <button class="mini" id="pfAddBtn" type="button">＋ 文件</button>
             <button class="mini" id="pfPasteBtn" type="button">粘贴</button>
           </div>
@@ -72,7 +71,7 @@
           <div class="pf-list" id="pfList" hidden></div>
           <textarea id="pfPaste" rows="3" hidden
                     placeholder="把作品集说明、项目复盘粘进来……（可以只粘贴你最想被问到的那段）"></textarea>
-          <div class="resume-meta" id="pfMeta">还没加作品集。加了它就会挑作品集里的东西问</div>
+          <div class="resume-meta" id="pfMeta">可选，最多 6 份，也能直接拖进来。加了它，面试官会挑里面的东西问。</div>
         </div>
       </div>
 

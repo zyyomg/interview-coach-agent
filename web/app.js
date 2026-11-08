@@ -12,9 +12,11 @@
   const startBtn = $('startBtn');
   const tipbar = $('tipbar');
   const resumeBox = $('resumeBox');
+  const resumeDrop = $('resumeDrop');
   const resumeFile = $('resumeFile');
   const resumePaste = $('resumePaste');
   const resumeMeta = $('resumeMeta');
+  const pfBox = $('pfBox');
   const pfAddBtn = $('pfAddBtn');
   const pfPasteBtn = $('pfPasteBtn');
   const pfFile = $('pfFile');
@@ -904,8 +906,44 @@
     });
   }
 
+  // 拖进来的文件不受 accept 约束，得自己挡一道。
+  // .doc 老格式服务端读不出，先在本地拦住，省得白传一次 base64
+  const DOC_EXT = /\.(docx|pdf|txt|md|markdown)$/i;
+
+  // 浏览器默认把拖进来的文件当导航打开——不拦住整页就跳走了。
+  // dragenter/dragleave 会在子元素之间反复触发，用计数才不会闪。
+  function dropZone(el, onFiles) {
+    if (!el) return;
+    let depth = 0;
+    const isFiles = (e) => !!e.dataTransfer
+      && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0;
+    el.addEventListener('dragenter', (e) => {
+      if (!isFiles(e)) return;
+      e.preventDefault(); depth += 1; el.classList.add('drag');
+    });
+    el.addEventListener('dragover', (e) => {
+      if (!isFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    el.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1);
+      if (!depth) el.classList.remove('drag');
+    });
+    el.addEventListener('drop', (e) => {
+      if (!isFiles(e)) return;
+      e.preventDefault(); depth = 0; el.classList.remove('drag');
+      const files = Array.prototype.slice.call(e.dataTransfer.files || []);
+      if (files.length) onFiles(files);
+    });
+  }
+
   function pickResume(file) {
     if (!file) return;
+    if (!DOC_EXT.test(file.name || '')) {
+      setResumeMeta('只支持 .docx / .pdf / .txt / .md。老式 .doc 请在 Word 里另存为 .docx，或把正文粘到下面。', 'bad');
+      return;
+    }
     if (file.size > 4 * 1024 * 1024) {
       setResumeMeta('文件超过 4MB，简历不该这么大——检查一下是不是选错了。', 'bad');
       return;
@@ -985,7 +1023,7 @@
 
     const chars = pfTotal() + (pfPaste.value || '').trim().length;
     if (!chars) {
-      pfMeta.textContent = '还没加作品集。加了它就会挑作品集里的东西问';
+      pfMeta.textContent = '可选，最多 6 份，也能直接拖进来。加了它，面试官会挑里面的东西问。';
       pfMeta.className = 'resume-meta';
       return;
     }
@@ -1012,6 +1050,10 @@
     pfMeta.className = 'resume-meta';
     // 逐个解析，不并发：文件不多，串行能保证列表顺序和选择顺序一致
     for (const file of batch) {
+      if (!DOC_EXT.test(file.name || '')) {
+        failed += 1; lastHint = `${file.name} 不是 .docx / .pdf / .txt / .md`;
+        continue;
+      }
       if (file.size > 4 * 1024 * 1024) {
         failed += 1; lastHint = `${file.name} 超过 4MB`;
         continue;
@@ -1690,6 +1732,25 @@
   endBtn.addEventListener('click', endEarly);
 
   resumeFile.addEventListener('change', (e) => pickResume(e.target.files && e.target.files[0]));
+  dropZone(resumeDrop, (files) => {
+    if (files.length > 1) tip(`简历只读一份，先用 ${files[0].name}；剩下的可以放进作品集。`);
+    pickResume(files[0]);
+  });
+  dropZone(pfBox, (files) => addPortfolioFiles(files));
+
+  // 拖到投放区之外时，浏览器会开个新标签页打开那个文件，整页就没了。
+  // 只拦「拖的是文件」的情况，页面里拖选文字不受影响
+  const fileDrag = (e) => !!e.dataTransfer
+    && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0;
+  document.addEventListener('dragover', (e) => { if (fileDrag(e)) e.preventDefault(); });
+  document.addEventListener('drop', (e) => {
+    if (!fileDrag(e)) return;
+    e.preventDefault();
+    const t = e.target;
+    const inside = t && t.closest && (t.closest('#resumeDrop') || t.closest('#pfBox'));
+    // 落在空白处文件会「静默消失」，说一句，免得以为已经传上去了
+    if (!inside && S.form === 'formal') tip('要拖到左边「选简历文件」或「作品集」那一块才会读。');
+  });
   resumePaste.addEventListener('input', () => {
     S.resumeText = (resumePaste.value || '').trim();
     if (S.resumeText) {
