@@ -59,6 +59,30 @@ Figma 有两种链接，用途完全不同：
 | `figma.com/proto/…` | 直接进演示模式，一屏大图，能点，看不到图层 | **简历**、HR、初筛 |
 | `figma.com/file/…` | 设计文件，左侧有图层树和页面列表，能翻组件库 | 作品集正文、复面、面试官 |
 
+> Figma 现在把 `/file/` 改叫 `/design/`，老链接会自动跳转，两者等价。本项目实际生成的是 `/design/`。
+
+### 本项目的实际链接（2026-11-10 无痕窗口验证通过）
+
+**简历用（短版，38 个字符）**
+
+```
+figma.com/proto/MeGvma1k5lRYE9b3mfJf5c
+```
+
+**作品集 / 邮件用（两条完整版）**
+
+```
+可点击原型（从 01 首页开始，点「开始对练」走主流程）：
+https://www.figma.com/proto/MeGvma1k5lRYE9b3mfJf5c/%E9%9D%A2%E8%AF%95%E9%99%AA%E7%BB%83Agent-%C2%B7-UI-v1?node-id=2-421&starting-point-node-id=2%3A421&page-id=0%3A1&scaling=min-zoom&content-scaling=fixed
+
+设计文件（三页：说明 / 页面 / 组件，可翻组件库）：
+https://www.figma.com/design/MeGvma1k5lRYE9b3mfJf5c/%E9%9D%A2%E8%AF%95%E9%99%AA%E7%BB%83Agent-%C2%B7-UI-v1?node-id=0-1
+```
+
+文件 ID 是 `MeGvma1k5lRYE9b3mfJf5c`，三条链接都靠它定位。`starting-point-node-id=2%3A421` 指向 `01 首页`，删了它演示会从别的画板开始；`scaling=min-zoom` 控制按窗口缩放，1440 宽的桌面稿必须留着。
+
+如果哪天改了文件名或重新连了线，这三条要重新复制一遍——参数会变。
+
 **别把 `/file/` 放简历。** HR 点开看到的是 Figma 编辑界面——工具栏、图层面板、一堆紫色菱形，第一眼是"一个工具"而不是"一个产品"，三秒内看不到界面就关掉了。`/proto/` 打开就是首页大图，点「开始对练」直接跳 02，这才是简历需要的效果。
 
 三个场景分别这么放：
@@ -74,7 +98,7 @@ Figma 有两种链接，用途完全不同：
 ```
 面试陪练 Agent｜AI 语音面试陪练（个人项目）        2026.08–2026.11
 · 语音多轮对练 + 逐题复盘；规则树控制澄清/追问/换题上限，10 条验收用例全过
-· 交互稿 figma.com/proto/〈ID〉 · 代码 github.com/zyyomg/interview-coach-agent
+· 交互稿 figma.com/proto/MeGvma1k5lRYE9b3mfJf5c · 代码 github.com/zyyomg/interview-coach-agent
 ```
 
 为什么放项目条目里而不是页眉：HR 扫简历是"扫项目"，链接跟在项目后面，上下文自解释；页眉那个孤立链接既容易被忽略，也容易被 ATS 截断。另外**链接写成纯文本**（不要只做超链接文字），招聘系统把 PDF 转文本时超链接会丢，纯文本还能被复制。
@@ -83,8 +107,8 @@ Figma 有两种链接，用途完全不同：
 
 私信/邮件里加一句怎么看，能显著提高对方真的点开的概率：
 
-> 设计文件（可看三屏和组件库）：figma.com/file/〈ID〉
-> 可点击原型（点「开始对练」走主流程）：figma.com/proto/〈ID〉
+> 设计文件（可看三屏和组件库）：figma.com/design/MeGvma1k5lRYE9b3mfJf5c
+> 可点击原型（点「开始对练」走主流程）：figma.com/proto/MeGvma1k5lRYE9b3mfJf5c
 
 复制 `/file/` 链接前先在画布空白处点一下取消选中，否则链接会带上 `?node-id=…`，对方一打开就跳到某一屏，看不到封面。
 
