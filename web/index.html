@@ -228,8 +228,11 @@
   <div class="modal-card hist-card">
     <button class="close" id="closeHist" aria-label="关闭">×</button>
     <h3 class="hist-title">往期复盘</h3>
-    <p class="hist-desc">每一场都存了复盘和对话，点一场看当时怎么答的。</p>
-    <div class="hist-list" id="histList"></div>
+    <p class="hist-desc" id="histDesc">每一场都存了复盘和对话，点一场看当时怎么答的。</p>
+    <div class="hist-scroll">
+      <div class="hist-list" id="histList"></div>
+      <div class="hist-rail" id="histRail" hidden><i id="histThumb"></i></div>
+    </div>
   </div>
 </div>
 

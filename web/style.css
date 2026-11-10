@@ -714,7 +714,27 @@ ul li b, ol li b { color: var(--ink); font-weight: 600; }
 .hist-card { width: min(600px, 100%); }
 .hist-title { margin: 0 0 4px; font-size: 16px; }
 .hist-desc { margin: 0 0 14px; font-size: 12px; color: var(--ink2); }
-.hist-list { display: flex; flex-direction: column; gap: 8px; }
+/* 列表自己滚：外层 .modal-card 是 overflow:hidden，列表不滚的话
+   第 N 条以后会被直接裁掉，而且连滚动条都不出现——看着像只存了这么多场。 */
+.hist-scroll { position: relative; flex: 1 1 auto; min-height: 0; display: flex; }
+.hist-list {
+  display: flex; flex-direction: column; gap: 8px;
+  flex: 1 1 auto; min-height: 0;      /* 百分比高度在 flex 里算不出来，必须靠收缩 */
+  overflow-y: auto;
+  padding-right: 14px;                /* 给右侧那条自绘滚动条留位 */
+}
+/* 自己画一条常驻滚动条。系统那条别指望：Windows 11 + Edge 默认是浮层滚动条，
+   不动鼠标不出现，而且浮层模式下 ::-webkit-scrollbar 会被忽略（实测宽度 0）。 */
+.hist-rail {
+  position: absolute; top: 2px; bottom: 2px; right: 0; width: 8px;
+  border-radius: 99px; background: #eceef2;
+  cursor: pointer; touch-action: none;
+}
+.hist-rail[hidden] { display: none; }
+.hist-rail i {
+  position: absolute; left: 0; width: 8px; min-height: 28px;
+  border-radius: 99px; background: #aab3c2;
+}
 .hist-item {
   display: flex; align-items: center; gap: 12px;
   padding: 11px 13px;

@@ -859,8 +859,13 @@ def _spend_summary() -> dict:
     return {"total_cny": round(total, 4), "live_sessions": live_n, "mock_sessions": mock_n}
 
 
-def _history_list(limit: int = 30) -> list:
-    """列出 runs/ 下的往期对练：时间、岗位、分数、结论。"""
+def _history_list(limit: int = 200) -> list:
+    """列出 runs/ 下的往期对练：时间、岗位、分数、结论。
+
+    以前写死 30，攒满 30 场后更早的就再也翻不到了（而且前端不会滚，
+    看着像"只存了 10 场"）。个人工具数据量有限，放宽到 200，
+    真要更多再加分页。
+    """
     items = []
     if not RUNS.exists():
         return items

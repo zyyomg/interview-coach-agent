@@ -1983,6 +1983,12 @@
     const list = $('histList');
     list.innerHTML = '';
     const items = S.history || [];
+    const desc = $('histDesc');
+    if (desc) {
+      desc.textContent = items.length
+        ? `共 ${items.length} 场（最新的在最上面），点一场看当时怎么答的。`
+        : '每一场都存了复盘和对话，点一场看当时怎么答的。';
+    }
     if (!items.length) {
       const p = document.createElement('p');
       p.className = 'hist-desc';
@@ -2018,7 +2024,48 @@
       list.appendChild(b);
     });
     $('histModal').hidden = false;
+    syncHistRail();
   }
+
+  // 自绘滚动条：内容没超出一屏就不显示
+  function syncHistRail() {
+    const l = $('histList');
+    const rail = $('histRail');
+    const thumb = $('histThumb');
+    if (!l || !rail || !thumb) return;
+    const over = l.scrollHeight - l.clientHeight;
+    if (over < 2 || !l.clientHeight) { rail.hidden = true; return; }
+    rail.hidden = false;
+    const h = Math.max(28, Math.round(l.clientHeight * l.clientHeight / l.scrollHeight));
+    const top = Math.round((l.scrollTop / over) * Math.max(0, l.clientHeight - h - 4));
+    thumb.style.height = h + 'px';
+    thumb.style.top = top + 'px';
+  }
+
+  // 自绘滚动条要能拖：画得像滚动条却拖不动，比不画更糟
+  let railDrag = null;
+  $('histRail').addEventListener('pointerdown', (e) => {
+    const l = $('histList');
+    const rail = $('histRail');
+    if (rail.hidden || !l) return;
+    railDrag = {
+      y: e.clientY, top: l.scrollTop,
+      railH: rail.getBoundingClientRect().height,
+      thumbH: $('histThumb').getBoundingClientRect().height,
+    };
+    rail.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  $('histRail').addEventListener('pointermove', (e) => {
+    if (!railDrag) return;
+    const l = $('histList');
+    const over = l.scrollHeight - l.clientHeight;
+    const span = railDrag.railH - railDrag.thumbH - 4;
+    if (span > 0) l.scrollTop = railDrag.top + (e.clientY - railDrag.y) * (over / span);
+  });
+  const endRailDrag = () => { railDrag = null; };
+  $('histRail').addEventListener('pointerup', endRailDrag);
+  $('histRail').addEventListener('pointercancel', endRailDrag);
 
   async function showHistoryDetail(id) {
     let d = null;
@@ -2098,6 +2145,10 @@
     openHistory();
   });
   $('closeHist').addEventListener('click', () => { $('histModal').hidden = true; });
+  $('histList').addEventListener('scroll', syncHistRail);
+  window.addEventListener('resize', () => {
+    if (!$('histModal').hidden) syncHistRail();
+  });
   $('histModal').addEventListener('click', (e) => {
     if (e.target === $('histModal')) $('histModal').hidden = true;
   });
