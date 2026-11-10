@@ -852,6 +852,27 @@ class InterviewAgent:
               "state": self.state(), "finished": False})
 
     # -- 一轮 --------------------------------------------------------
+    def _asked_questions(self, k: int = 3) -> list[str]:
+        """最近 k 个已经问出去的问题。
+
+        换话题时要把"这些问过了"告诉模型。只给一句「提一个新问题」不够：
+        它会换个说法把同一个材料点再问一遍——实测连问两次「字段抽取准确率
+        93.8 提到 98.6，这个数怎么算出来的」，两次只差几个字，候选人当场
+        就看出面试官在原地打转。这是信息没给到，不是模型不会。
+
+        按「最近问的在前」返回：刚答完的那道最容易被重复，排在 1 号。
+        """
+        asked = []
+        for h in reversed(self.history):
+            if h.get("role") != "assistant":
+                continue
+            t = " ".join((h.get("content") or "").split())
+            if t:
+                asked.append(t)
+            if len(asked) >= k:
+                break
+        return asked
+
     def handle_user(self, text: str, asr_empty: bool, emit):
         self.turn_seq += 1
         turn_id = self.turn_seq
@@ -924,6 +945,14 @@ class InterviewAgent:
             self.switches = 0
             self.easier = 0
             directive = f"进入第 {self.question_index} 个话题，提一个新问题，一句话。"
+            asked = self._asked_questions(3)
+            if asked:
+                # 把已问过的摊开给它看；最近的这一条最容易被重复，所以放在最前面数起
+                directive += (
+                    "\n下面这些是已经问过的，不要重复，也不要换个说法问同一件事：\n"
+                    + "\n".join(f"{i}. {q}" for i, q in enumerate(asked, 1))
+                    + "\n只输出新问题本身，一句话，不要复述上面这份清单。"
+                )
 
         if self.easier and action in (PROBE, ASK):
             directive += "（候选人刚被降过难度，问题保持基础。）"

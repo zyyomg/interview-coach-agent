@@ -213,12 +213,12 @@ const check = (ok, msg) => {
   if (rec.onstart) rec.onstart();
   const beforeTurn = sr.startCalls;
   rec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: '我是产品经理，做过一个工具' } }] });
-  advance(4800);              // 说完判定 4.5 秒，之前 3 秒
+  advance(5200);              // 说完判定：15 字 ≈ 4.8 秒，留点余量
   await flush();
   advance(400);
   check(sr.startCalls > beforeTurn, `一轮说完了，麦克风自动接上（start ${sr.startCalls - beforeTurn} 次）`);
 
-  // ③ 冷场：轮到你说，却一直没动静。面试官要主动接一句。
+  // ④ 冷场：轮到你说，却一直没动静。面试官要主动接一句。
   //    注意这期间心跳会重开麦克风，不能因此把冷场计时搅黄（两者用不同时间戳）。
   advance(5000);
   const beforeNudge = silencePosts;
@@ -226,7 +226,7 @@ const check = (ok, msg) => {
   await flush();
   check(silencePosts > beforeNudge, `冷场 20 秒 → 主动催场（调了 ${silencePosts - beforeNudge} 次）`);
 
-  // ④ 点麦克风 = 只关麦，不发空轮
+  // ⑤ 点麦克风 = 只关麦，不发空轮
   //    原来「关麦」会走 commitSpeech，识别为空但起过音 → 发一个空轮
   //    → 后端判成 CLARIFY → 面试官说「我没听清，再说一遍」，用户只是想去打字
   if (rec.onstart) rec.onstart();
@@ -235,7 +235,7 @@ const check = (ok, msg) => {
   await flush();
   check(turnPosts === beforeMicTurn, `点麦克风只关麦、不发空轮（turn 调用 ${turnPosts - beforeMicTurn} 次）`);
 
-  // ⑤ 暂停：整场冻住，不催场、不提交；再按一下接着来
+  // ⑥ 暂停：整场冻住，不催场、不提交；再按一下接着来
   if (rec.onstart) rec.onstart();
   els.get('pauseBtn').click();
   await flush();
@@ -251,7 +251,7 @@ const check = (ok, msg) => {
   advance(50);
   check(S.paused === false && sr.started, '点「继续」恢复识别');
 
-  // ⑥ 光标停在输入框里但没在敲字 → 仍然要催（实测踩过：点过一次框就再也不催了）
+  // ⑦ 光标停在输入框里但没在敲字 → 仍然要催（实测踩过：点过一次框就再也不催了）
   const inputEl = els.get('textInput');
   if (inputEl._h.focus) inputEl._h.focus();
   S.lastKeyAt = performance.now() - 10000;
@@ -260,7 +260,7 @@ const check = (ok, msg) => {
   await flush();
   check(silencePosts > beforeIdleTyping, `光标在框里但没打字 → 照样催场（${silencePosts - beforeIdleTyping} 次）`);
 
-  // ⑦ 刚敲过键盘 → 不催，而且过了 6 秒还得能恢复（跳过时也要重挂计时）
+  // ⑧ 刚敲过键盘 → 不催，而且过了 6 秒还得能恢复（跳过时也要重挂计时）
   S.nudges = 0;          // 按"第一次冷场"的节奏来测
   S.nudgeMs = 3000;
   S.closeMs = 3000;
@@ -273,7 +273,7 @@ const check = (ok, msg) => {
   await flush();
   check(silencePosts > beforeTyping, `打字停下 6 秒后仍会催（${silencePosts - beforeTyping} 次）`);
 
-  // ⑧ 复盘渲染：逐题参考答法（有范本 / 演示模式无范本两种都要不报错）
+  // ⑨ 复盘渲染：逐题参考答法（有范本 / 演示模式无范本两种都要不报错）
   let sampleOk = true;
   try {
     global.__ui.renderSamples({
@@ -288,7 +288,7 @@ const check = (ok, msg) => {
   }
   check(sampleOk, '复盘渲染：逐题参考答法两种数据都不报错');
 
-  // ⑨ 打字模式（识别不可用 / 手动关了语音）不催场、不收场——
+  // ⑩ 打字模式（识别不可用 / 手动关了语音）不催场、不收场——
   //    用户手上有键盘，5 秒催一句、10 秒收场太粗暴（实测把人从打字里直接踢下线）
   S.voice = false;
   S.asrDown = true;
@@ -299,7 +299,7 @@ const check = (ok, msg) => {
   S.voice = true;
   S.asrDown = false;
 
-  // ⑩ 「暂停 + 识别判死」时点麦克风要能救回来：解除暂停、换新识别器、开麦
+  // ⑪ 「暂停 + 识别判死」时点麦克风要能救回来：解除暂停、换新识别器、开麦
   //    实测就卡在这个组合上——暂停时 startRec 直接返回，按什么都没反应
   S.voice = false;
   S.asrDown = true;
@@ -312,7 +312,7 @@ const check = (ok, msg) => {
   check(sr.instances.length === beforeInstances + 1 && sr.started,
     `…并且换了新的识别器、真的开麦了（新实例 ${sr.instances.length - beforeInstances} 个）`);
 
-  // ⑪ 识别断线（network）后要自己重连，不能等用户去点开关
+  // ⑫ 识别断线（network）后要自己重连，不能等用户去点开关
   S.asrDown = false;
   S.paused = false;
   S.voice = true;
@@ -325,6 +325,21 @@ const check = (ok, msg) => {
   advance(5000);                                   // 第一次退避 4 秒
   await flush();
   check(sr.instances.length > beforeAuto, `断线 4 秒后自动重连（新识别器 ${sr.instances.length - beforeAuto} 个）`);
+
+  // ⑬ 说完判定按「说了多少字」自适应，别再拿固定 4.5 秒切长回答
+  //    背景：用户一段长回答说到一半换气 4.5 秒，前半段被发走、识别器重启，
+  //    后半段落进新缓冲区，等面试官问完下一题才发出去——两段分属两道题。
+  const longRec = sr.instances[sr.instances.length - 1];
+  if (longRec.onstart) longRec.onstart();
+  const beforeLong = turnPosts;
+  longRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: '啊'.repeat(100) } }] });
+  advance(5500);
+  await flush();
+  check(turnPosts === beforeLong, `100 字的回答，停 5.5 秒还不交卷（固定 4.5 秒时这里已经发了）`);
+  advance(1500);
+  await flush();
+  check(turnPosts === beforeLong + 1, `再多等一会才提交（自适应约 6.5 秒）`);
+
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);
