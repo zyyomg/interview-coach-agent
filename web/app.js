@@ -7,6 +7,12 @@
   const mb = (b) => (b >= 1024 * 1024
     ? (b / 1024 / 1024).toFixed(1).replace(/\.0$/, '') + 'MB'
     : Math.max(1, Math.round(b / 1024)) + 'KB');
+  // fetch 对"服务没开"只抛 TypeError，对"返回的不是 JSON"抛 SyntaxError。
+  // 两种都写成"读取失败"的话，用户会去怀疑文件——所以按类型分开说。
+  const netHint = (e, fallback) => (
+    e instanceof TypeError ? '连不上本地服务，确认服务还开着'
+      : e instanceof SyntaxError ? '服务返回异常，看终端有没有报错'
+        : fallback);
   const chat = $('chat');
   const input = $('textInput');
   const micBtn = $('micBtn');
@@ -973,9 +979,9 @@
         try { resumePaste.scrollTop = 0; } catch (e) {}   // 让用户先看到开头，不是结尾
         setResumeMeta(`已读 ${S.resumeName} · ${d.chars} 字 · 不写入会话记录；提问时会随提示词发给模型`, 'ok');
       } catch (e) {
-        setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad');
+        setResumeMeta(netHint(e, '读取失败，换一个文件，或直接把文字粘到下面。'), 'bad');
       }
-    }).catch(() => setResumeMeta('读取失败，换一个文件，或直接把文字粘到下面。', 'bad'));
+    }).catch((e) => setResumeMeta(netHint(e, '读取失败，换一个文件，或直接把文字粘到下面。'), 'bad'));
   }
 
   /* ---- 作品集：一份不够，作品集天然是多份文件 ---- */
@@ -1081,7 +1087,10 @@
           name: d.name || file.name, chars: d.chars || 0, text: d.text || '',
         });
       } catch (e) {
-        failed += 1; lastHint = '读取失败';
+        failed += 1;
+        // 这里以前一律写「读取失败」，结果是：服务已经关掉时，用户看到"读不出来"，
+        // 会以为是这份 PDF 有问题，反复换文件。网络错误和解析错误必须分开说。
+        lastHint = netHint(e, '读不出来');
       }
     }
     buildPortfolio();
