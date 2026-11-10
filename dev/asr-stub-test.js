@@ -187,7 +187,7 @@ const check = (ok, msg) => {
   // 只在内存里把内部状态挂出来，不改文件；app.js 是 IIFE，否则外面看不见
   eval(src
     .replace('const S = {', 'const S = global.__S = {')
-    .replace(/\}\)\(\);\s*$/, 'global.__ui = { renderSamples, renderReport, resetSilence };\n})();'));   // eslint-disable-line no-eval
+    .replace(/\}\)\(\);\s*$/, 'global.__ui = { renderSamples, renderReport, resetSilence, armSilence, paintMic, asrLooksDead, fireSilence };\n})();'));   // eslint-disable-line no-eval
 
   const S = global.__S;
   const resetSilence = global.__ui.resetSilence;
@@ -395,6 +395,68 @@ const check = (ok, msg) => {
   advance(2000);
   await flush();
   check(turnPosts === beforeStuck + 1, `生成结束后自动补交（${turnPosts - beforeStuck} 次）`);
+
+  // ⑯ 识别假活：麦克风亮着，但很久没有任何识别事件 → 这不是「用户沉默」
+  //    真实事故（11-10 16:05 那场，78 秒）：第二轮用户明明说了话，识别一个字没出，
+  //    5 秒催场 + 5 秒收尾，整场被「你没说话」结束。所以催场前必须先验识别还活着。
+  S.busy = false;
+  S.speaking = false;
+  S.finished = false;
+  S.paused = false;
+  S.voice = true;
+  S.asrDown = false;
+  S.listening = true;
+  S.finalText = '';
+  S.interimText = '';
+  S.nudges = 0;
+  S.asrRescued = false;
+  S.nudgeMs = 6000;
+  S.lastStartAt = performance.now() - 5000;
+  S.lastAsrAt = performance.now() - 5000;        // 5 秒零事件，到催场那刻正好超 9 秒
+  const beforeRescuePosts = silencePosts;
+  const beforeRescueInst = sr.instances.length;
+  global.__ui.armSilence();
+  advance(6200);
+  await flush();
+  check(silencePosts === beforeRescuePosts, '识别假活 → 不催场（先救识别，不判沉默）');
+  check(sr.instances.length > beforeRescueInst,
+    `识别假活 → 换了新识别器（+${sr.instances.length - beforeRescueInst}）`);
+  check(S.asrRescued === true, '识别假活 → 记下「这一轮救过了」，不会无限重连');
+
+  // ⑰ 麦克风根本没在听 → 也判不了沉默，绝不能催场收尾
+  S.asrRescued = false;
+  S.listening = false;
+  S.nudges = 0;
+  S.nudgeMs = 3500;
+  S.lastStartAt = performance.now();             // 刚试过开麦，心跳 5 秒内不会再试
+  check(global.__ui.asrLooksDead() === true,
+    `（自检）此刻识别被判为不活：listening=${S.listening} voice=${S.voice} down=${S.asrDown} rescued=${S.asrRescued}`);
+  const beforeDeadPosts = silencePosts;
+  // 直接调，不经过计时器：这条要验的是「识别不活时 fireSilence 怎么判」，
+  // 让 3.5 秒的假时钟跑一遍反而会把别的计时器（探针、心跳）混进来。
+  await global.__ui.fireSilence();
+  check(silencePosts === beforeDeadPosts, '麦克风没在听 → 不催场（判断不了沉默就不判）');
+
+  // ⑱ 救了还是接不上 → 转打字模式，绝不能继续拿「沉默」收尾
+  //    （识别彻底坏了的时候，"没声音"是设备问题，不是候选人不想答）
+  S.asrRescued = true;                           // 已经救过一次
+  S.listening = false;
+  S.voice = true;
+  S.asrDown = false;
+  S.finished = false;
+  S.nudges = 0;
+  const beforeGiveUp = silencePosts;
+  await global.__ui.fireSilence();
+  check(silencePosts === beforeGiveUp, '救了仍不活 → 不催场（不再判沉默）');
+  check(S.asrDown === true && S.voice === false, '救了仍不活 → 转成打字模式，这场继续');
+
+  // ⑲ 麦克风按钮是语音出问题时唯一的自救入口，生成期间也不能禁
+  //    （以前带 S.busy：等模型那几秒点它毫无反应，用户只会说「麦克风点不了」）
+  S.busy = true;
+  global.__ui.paintMic();
+  check(els.get('micBtn').disabled === false, '生成期间麦克风按钮仍可点');
+  S.busy = false;
+  global.__ui.paintMic();
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);

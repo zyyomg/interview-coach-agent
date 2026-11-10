@@ -98,6 +98,12 @@
     reportedAudio: false,
     timer: { silence: 0, barge: 0, silenceNudge: 0, asrProbe: 0, asrRetry: 0 },
     asrFails: 0,        // 识别连续断线次数，成功出字就清零；重连带指数退避
+    // 这两个以前是同一个字段，混着用会互相骗：
+    // 一个说「最后一次收到识别事件」，一个用来说「上次开麦是什么时候」。
+    // startRec 一刷新，假活检测就永远看到"刚刚还有事件"，于是判定失效。
+    lastAsrAt: 0,       // 最后一次**真的**收到识别事件（onstart / onspeechstart / onresult）
+    lastStartAt: 0,     // 最后一次尝试开麦：只给重开节流用，不代表识别活着
+    asrRescued: false,  // 这一轮沉默里是否已经为「识别假活」重连过一次
     silenceMs: 4500,     // 说完了停多久算说完。3 秒实测还是太急，用户停一下就被打断；跟 config 走
     nudgeMs: 5000,       // 轮到你说、却一个字都没有，多久催一句（服务端可覆盖）
     closeMs: 5000,       // 催过之后还没动静，多久把这一场收掉（服务端可覆盖）→ 累计 10 秒
@@ -371,7 +377,11 @@
 
   function paintMic() {
     micBtn.classList.toggle('on', S.listening);
-    micBtn.disabled = !S.session || S.finished || S.busy;
+    // 麦克风是「语音出问题时唯一的自救入口」，不能在生成期间禁掉。
+    // 以前这里带 S.busy：等模型回复的几秒里点它毫无反应，用户只会得出
+    // 「麦克风点不了」的结论——而他正需要靠这个按钮把识别救回来。
+    micBtn.disabled = !S.session || S.finished;
+    micBtn.title = S.listening ? '麦克风开着，点一下关掉' : '麦克风关着，点一下打开';
     pauseBtn.disabled = !S.session || S.finished;
     pauseBtn.classList.toggle('on', S.paused);
     pauseBtn.textContent = S.paused ? '继续' : '暂停';
@@ -568,6 +578,7 @@
       S.asrRestarts = 0;                  // 出字了就说明引擎活着，重连计数清零
       S.asrDown = false;
       S.asrFails = 0;                     // 也把"断线次数"清零，下次断了重新从 4 秒开始
+      S.asrRescued = false;               // 出字了：这一轮的「识别假活」自救到此为止
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
@@ -652,6 +663,7 @@
     S.tts = true;
     S.asrDown = false;
     S.asrRestarts = 0;
+    S.asrRescued = false;            // 手动重连 = 重新开始，允许再救一次
     S.lastAsrAt = 0;
     $('voiceSwitch').classList.add('on');
     $('voiceHint').textContent = '它会念，你说完自动接话';
@@ -715,19 +727,24 @@
     if (S.speaking || S.busy) return;              // 它在说话 / 还在生成，不开麦
 
     if (!S.listening) {                            // 该听却没在听：接上，最多 5 秒一次
-      if (performance.now() - (S.lastAsrAt || 0) > 5000) startRec();
+      const sinceStart = performance.now() - (S.lastStartAt || 0);
+      if (sinceStart > 5000) startRec();
+      // 接不上就别装没事：状态栏直接说，用户才知道要动手点一下
+      else if (sinceStart > 2500) setStatus('麦克风没接上 · 点一下麦克风重连', 'on');
       return;
     }
 
     // 前 3 次 12 秒救一次，还不活就放慢到 60 秒，别一直折腾麦克风
-    const idleMs = performance.now() - (S.lastAsrAt || 0);
+    // 「多久没动静」取「最后一次真实事件」和「最后一次开麦」里更近的那个：
+    // 只看 lastAsrAt 会漏掉「开麦成功、onstart 来过、之后引擎立刻死」这种情况。
+    const idleMs = performance.now() - Math.max(S.lastAsrAt || 0, S.lastStartAt || 0);
     if (idleMs < (S.asrRestarts > 3 ? 60000 : 12000)) return;
 
     S.asrRestarts += 1;
     if (S.asrRestarts === 4) {
       tip('<b>识别连着几次没反应</b>　一直这样的话先点一下麦克风按钮、或者直接打字，别在这儿耗。');
     }
-    S.lastAsrAt = performance.now();
+    S.lastStartAt = performance.now();   // 只给节流计时，不动 lastAsrAt：它要留着暴露「真的没事件」
     try { rec.abort(); } catch (e) { /* noop */ }
     S.listening = false;
     // 留一行日志：用户下次说"又不出字了"，打开控制台就能看出是不是这个心跳在救
@@ -760,7 +777,7 @@
     // 识别引擎在静默几秒后会自己 onend，代码再 startRec 把它接上——
     // 如果这时把缓冲清了，用户说到一半的半句话就没了（"前半段没录进去"）。
     // 清空只发生在「这一轮已经提交」之后。
-    S.lastAsrAt = performance.now();      // 重开一次，心跳重新计时
+    S.lastStartAt = performance.now();    // 重开一次，给重开节流重新计时（不是"识别活着"的证据）
     try { rec.start(); } catch (e) { /* 已在跑 */ }
   }
 
@@ -877,6 +894,13 @@
     console.info('[nudge] 跳过：' + reason);
   }
 
+  // 识别是不是「看着开着、其实没在工作」
+  function asrLooksDead() {
+    if (!S.voice || S.asrDown || S.paused || !S.session || S.finished) return false;
+    if (!S.listening) return true;                            // 麦克风根本没在跑
+    return performance.now() - (S.lastAsrAt || 0) > 9000;     // 亮着，但 9 秒零事件
+  }
+
   // 返回"为什么现在不催"，空串表示可以催。
   function nudgeBlockedReason() {
     if (!S.session) return '没有会话';
@@ -885,6 +909,9 @@
     // 打字模式（识别不可用 / 手动关了语音）不催场、不收场：
     // 用户手上有键盘，5 秒催一句、10 秒结束太粗暴（实测把人从打字里直接踢下线）
     if (S.asrDown || !S.voice) return '在打字模式，不催场';
+    // 麦克风没在听的时候，「没动静」什么都说明不了——判不了，就别判。
+    // 这是收尾前的最后一道闸：识别不工作，绝不允许因为「沉默」结束整场。
+    if (!S.listening) return '麦克风没在听，判断不了沉默';
     if (S.busy) return '正在生成，等它说完';
     if (S.speaking) return '播报没结束（一直这样的话是 TTS 没回调）';
     if ((S.finalText || '').trim() || (S.interimText || '').trim()) return '识别缓冲里还有话';
@@ -896,6 +923,25 @@
   }
 
   async function fireSilence() {
+    // 「没声音」和「识别没在听」是两件事，后者绝不能算沉默。
+    // 催一句 5 秒、再 5 秒收尾——10 秒足够把一个正在说话的人踢下线（真实发生过一场）。
+    // 所以先救一次识别；救不回来会转打字模式，那条路本来就不催场。
+    if (!S.busy && !S.speaking && asrLooksDead()) {
+      if (!S.asrRescued) {
+        nudgeSkip('识别没在真正工作，先重连再判断沉默');
+        tip('<b>没收到麦克风的声音</b>　正在重连识别；如果还不行就先打字，这一场不会因此结束。');
+        retryAsr();
+        S.asrRescued = true;      // 必须在 retryAsr 之后：它会把标记清成"重新开始"
+        armSilence();
+        return;
+      }
+      // 救过一次还是不行：别再拿「沉默」判它了。切打字，让人用键盘把这场说完——
+      // 宁可少一段语音数据，也不能把一整场面试因为"没听见"而作废。
+      degrade('麦克风一直没接上，已切到打字模式——这一场不会因为「没声音」结束。');
+      nudgeSkip('识别救不回来，转打字');
+      armSilence();
+      return;
+    }
     const why = nudgeBlockedReason();
     if (why) {
       nudgeSkip(why);
@@ -941,6 +987,7 @@
     clearInput();
     S.finalText = '';
     S.interimText = '';
+    S.asrRescued = false;      // 交完这一轮，下一次沉默可以重新救一次
     // 没字就不发。原来只要"起过音"就发一个空轮，服务端会判成"没听清，再说一遍"，
     // 用户只是想把麦克风关掉去打字，结果挨了一句"我没听清"——纯噪声。
     if (empty) return;
