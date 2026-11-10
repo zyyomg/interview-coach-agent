@@ -50,7 +50,10 @@ LOCK = threading.Lock()
 STATE = {"mock": False}
 VERSION = "0.1"
 
-RESUME_MAX_BYTES = 5 * 1024 * 1024        # 简历文件上限，超过就不是简历了
+# 上传体积上限。只挡误传的大文件（视频、安装包、整本画册），不是内容限制：
+# 解析只取文字，字数另有 RESUME_MAX_CHARS 管着，体积再大也是白传。
+# 定 20MB 是因为图片多的作品集 PDF 就是 5MB 量级——原先把上限写 5MB，反而挡住正常册子。
+UPLOAD_MAX_BYTES = 20 * 1024 * 1024
 RESUME_MAX_CHARS = 20000                 # 解析后保留的字数，防粘贴一整本书
 # 作品集是多份文件拼起来的，单份按简历的额度读，合并后另设一个上限：
 # 再多也没用——进提示词的只有 config 里 portfolio.max_chars 那点字。
@@ -517,6 +520,7 @@ class Handler(BaseHTTPRequestHandler):
                 "turn_silence_seconds": (CONFIG.get("turn") or {}).get("silence_seconds", 4.5),
                 "portfolio_chars": (CONFIG.get("portfolio") or {}).get("max_chars", 1600),
                 "portfolio_max_files": PORTFOLIO_MAX_FILES,
+                "upload_max_bytes": UPLOAD_MAX_BYTES,
             })
             return
 
@@ -675,10 +679,10 @@ class Handler(BaseHTTPRequestHandler):
             raw = base64.b64decode(data.split(",")[-1], validate=False)
         except Exception:
             return self._json({"ok": False, "kind": "broken", "hint": "文件读取失败，换一个再试"}, 400)
-        if len(raw) > RESUME_MAX_BYTES:
+        if len(raw) > UPLOAD_MAX_BYTES:
             return self._json({
                 "ok": False, "kind": "big",
-                "hint": f"文件超过 {RESUME_MAX_BYTES // 1024 // 1024}MB。"
+                "hint": f"文件超过 {UPLOAD_MAX_BYTES // 1024 // 1024}MB。"
                         f"单个{noun}文件不该这么大，检查一下是不是选错了。",
             }, 400)
         out = parse_resume(name, raw, what)

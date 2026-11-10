@@ -3,6 +3,10 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  // 体积说人话：5.0MB / 812KB。提示里要写清"你传的是多大、上限多大"，不然用户没法判断该不该换文件。
+  const mb = (b) => (b >= 1024 * 1024
+    ? (b / 1024 / 1024).toFixed(1).replace(/\.0$/, '') + 'MB'
+    : Math.max(1, Math.round(b / 1024)) + 'KB');
   const chat = $('chat');
   const input = $('textInput');
   const micBtn = $('micBtn');
@@ -44,6 +48,7 @@
     pfName: '',           // 文件名拼起来，只用于落盘记录
     pfLimit: 1600,        // 进提示词的字数，由 /api/health 下发，只用于提示
     pfMaxFiles: 6,
+    uploadMaxBytes: 20 * 1024 * 1024,  // 单份文件体积上限，同样由 /api/health 下发
     role: 'general',      // 只有一个预设：通用
     roleTitle: '',        // 自己写的岗位名；有值时优先于 role
     rounds: 8,
@@ -944,8 +949,8 @@
       setResumeMeta('只支持 .docx / .pdf / .txt / .md。老式 .doc 请在 Word 里另存为 .docx，或把正文粘到下面。', 'bad');
       return;
     }
-    if (file.size > 4 * 1024 * 1024) {
-      setResumeMeta('文件超过 4MB，简历不该这么大——检查一下是不是选错了。', 'bad');
+    if (file.size > S.uploadMaxBytes) {
+      setResumeMeta(`文件 ${mb(file.size)}，超过 ${mb(S.uploadMaxBytes)} 上限——检查一下是不是选错了。`, 'bad');
       return;
     }
     setResumeMeta('正在读取…');
@@ -1054,8 +1059,8 @@
         failed += 1; lastHint = `${file.name} 不是 .docx / .pdf / .txt / .md`;
         continue;
       }
-      if (file.size > 4 * 1024 * 1024) {
-        failed += 1; lastHint = `${file.name} 超过 4MB`;
+      if (file.size > S.uploadMaxBytes) {
+        failed += 1; lastHint = `${file.name} ${mb(file.size)}，超过 ${mb(S.uploadMaxBytes)}`;
         continue;
       }
       try {
@@ -2038,6 +2043,7 @@
       // 作品集能进提示词多少字、最多几份，都跟随后端配置，前端不写死
       if (h.portfolio_chars) S.pfLimit = h.portfolio_chars;
       if (h.portfolio_max_files) S.pfMaxFiles = h.portfolio_max_files;
+      if (h.upload_max_bytes) S.uploadMaxBytes = h.upload_max_bytes;
       paintPortfolio();
       const dot = $('modeDot');
       dot.classList.add(S.mock ? 'mock' : 'live');
