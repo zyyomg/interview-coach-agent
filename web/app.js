@@ -769,12 +769,24 @@
     paintMic();
   }
 
+  // 「说完」要等多久。固定值会把长回答切成两段：说到一半换气 4.5 秒，
+  // 前半段就被 commitSpeech 发走、识别器 stopRec 重启，后半段落进新缓冲区，
+  // 只能等面试官问完下一题才发出去——两段分属两道题，语境全错。
+  // 所以按已经说了多少字给耐心：说得越多，越可能只是换气。
+  // 有未定稿的 interim 也再多等一会——那说明引擎自己还没听完。
+  function silenceWaitMs() {
+    const said = (S.finalText || '').trim().length;
+    const interim = (S.interimText || '').trim();
+    const extra = Math.min(2000, said * 20);     // 每 20 字加 0.4 秒，最多加 2 秒
+    return S.silenceMs + extra + (interim ? 1000 : 0);
+  }
+
   function resetSilence() {
     clearTimeout(S.timer.silence);
     if (S.paused || S.speaking || S.busy) return;   // 暂停 / 它在说 / 还在生成：不判"说完"
     S.timer.silence = setTimeout(() => {
       if (!S.paused && !S.speaking && !S.busy && S.finalText.trim()) commitSpeech();
-    }, S.silenceMs);
+    }, silenceWaitMs());
   }
 
   // 播报 / 生成结束时补一次。否则用户趁它说话时讲的内容，
