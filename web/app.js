@@ -193,10 +193,21 @@
   function clearInput() {
     input.value = '';
     growInput();
+    paintSend();
+  }
+
+  // 发送按钮能不能点，由「现在按下去会不会有反应」推出来——
+  // 判据就是 sendTurn 开头那三个前置条件，加上框里真有字。
+  // 这里曾经只在 HTML 里写了 disabled，没有任何一行把它设回 false：
+  // 回车一直能发，点按钮永远没反应，好几场都没人发现（都在用嘴说）。
+  function paintSend() {
+    sendBtn.disabled = !(S.session && !S.finished && !S.busy
+      && !input.disabled && input.value.trim().length > 0);
   }
 
   // 状态文字只在这一处算，避免各回调互相覆盖
   function refreshStatus() {
+    paintSend();
     if (S.finished) return;
     if (S.speaking) { setStatus('面试官在说 · 你可以直接打断', 'speak'); return; }
     if (S.busy) { setStatus('思考中…', 'think'); return; }
@@ -572,6 +583,7 @@
         // 留够一整段，靠输入框自己换行 + 滚到底来显示最新内容
         input.value = merged.slice(-400);
         growInput();
+        paintSend();        // 语音写的字也要让发送按钮亮起来，不然「你说的都在这了」却点不动
       }
 
       // 边说边听：识别到成句的内容，就算打断，不等 VAD
@@ -1812,6 +1824,7 @@
   // 注意这里不能 disarm：清掉之后没人再武装，冷场就永远不触发了。
   input.addEventListener('input', () => {
     growInput();
+    paintSend();
     S.lastKeyAt = performance.now();
     armSilence();
   });
