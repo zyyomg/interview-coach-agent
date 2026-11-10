@@ -183,7 +183,8 @@
 <div class="modal" id="modal" hidden>
   <div class="modal-card">
     <button class="close" id="closeModal" aria-label="关闭">×</button>
-    <div class="modal-body">
+    <div class="body-scroll">
+    <div class="modal-body" id="modalBody">
     <div class="report-head">
       <div class="score-ring" id="scoreRing"><span id="scoreNum">—</span><i>分</i></div>
       <div class="report-title">
@@ -216,6 +217,8 @@
       <div class="turns" id="transcript"></div>
     </div>
     </div>
+    <div class="rail" id="reportRail" hidden><i id="reportThumb"></i></div>
+    </div>
 
     <div class="actions">
       <button class="primary" id="againBtn">再练一场</button>
@@ -231,7 +234,7 @@
     <p class="hist-desc" id="histDesc">每一场都存了复盘和对话，点一场看当时怎么答的。</p>
     <div class="hist-scroll">
       <div class="hist-list" id="histList"></div>
-      <div class="hist-rail" id="histRail" hidden><i id="histThumb"></i></div>
+      <div class="rail" id="histRail" hidden><i id="histThumb"></i></div>
     </div>
   </div>
 </div>

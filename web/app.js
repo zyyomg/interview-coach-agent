@@ -1492,6 +1492,8 @@
     $('transcriptWrap').hidden = true;      // 本场复盘不显示回顾，回顾在「往期」里看
     $('downloadBtn').hidden = false;
     $('modal').hidden = false;
+    $('modalBody').scrollTop = 0;   // 同一个节点反复用，不清会停在上次看到的位置
+    reportRail.sync();
     setStatus('已复盘', 'on');
     tip('记录已存到 runs/，可以下载复盘；下一场在「往期复盘」里能翻回来。');
     loadHistory();
@@ -2027,45 +2029,61 @@
     syncHistRail();
   }
 
-  // 自绘滚动条：内容没超出一屏就不显示
-  function syncHistRail() {
-    const l = $('histList');
-    const rail = $('histRail');
-    const thumb = $('histThumb');
-    if (!l || !rail || !thumb) return;
-    const over = l.scrollHeight - l.clientHeight;
-    if (over < 2 || !l.clientHeight) { rail.hidden = true; return; }
-    rail.hidden = false;
-    const h = Math.max(28, Math.round(l.clientHeight * l.clientHeight / l.scrollHeight));
-    const top = Math.round((l.scrollTop / over) * Math.max(0, l.clientHeight - h - 4));
-    thumb.style.height = h + 'px';
-    thumb.style.top = top + 'px';
+  /* ---------------------------------------------------- 自绘滚动条 */
+  // 系统那条别指望：Windows 11 + Edge 浮层滚动条不动鼠标不出现，
+  // 而且浮层模式下 ::-webkit-scrollbar 会被忽略（实测宽度 0）。所以自己画一条。
+  // 往期复盘和复盘弹窗共用，位置和手感保持一致。
+  function makeRail(scroll, rail, thumb) {
+    if (!scroll || !rail || !thumb) return { sync() {} };
+
+    function sync() {
+      const over = scroll.scrollHeight - scroll.clientHeight;
+      if (over < 2 || !scroll.clientHeight) { rail.hidden = true; return; }
+      rail.hidden = false;
+      // 滑块按「可视 / 全部」等比缩放，最短 28px 保证好点
+      const h = Math.max(28, Math.round(scroll.clientHeight * scroll.clientHeight / scroll.scrollHeight));
+      const span = Math.max(0, rail.clientHeight - h);
+      thumb.style.height = h + 'px';
+      thumb.style.top = (over > 0 ? Math.round((scroll.scrollTop / over) * span) : 0) + 'px';
+    }
+
+    // 画得像滚动条却拖不动，比不画更糟，所以拖动必须真能用
+    let drag = null;
+    rail.addEventListener('pointerdown', (e) => {
+      if (rail.hidden) return;
+      drag = {
+        y: e.clientY, top: scroll.scrollTop,
+        railH: rail.getBoundingClientRect().height,
+        thumbH: thumb.getBoundingClientRect().height,
+      };
+      rail.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    rail.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const over = scroll.scrollHeight - scroll.clientHeight;
+      const span = drag.railH - drag.thumbH;
+      if (span > 0) scroll.scrollTop = drag.top + (e.clientY - drag.y) * (over / span);
+    });
+    const end = () => { drag = null; };
+    rail.addEventListener('pointerup', end);
+    rail.addEventListener('pointercancel', end);
+    scroll.addEventListener('scroll', sync, { passive: true });
+
+    return { sync };
   }
 
-  // 自绘滚动条要能拖：画得像滚动条却拖不动，比不画更糟
-  let railDrag = null;
-  $('histRail').addEventListener('pointerdown', (e) => {
-    const l = $('histList');
-    const rail = $('histRail');
-    if (rail.hidden || !l) return;
-    railDrag = {
-      y: e.clientY, top: l.scrollTop,
-      railH: rail.getBoundingClientRect().height,
-      thumbH: $('histThumb').getBoundingClientRect().height,
-    };
-    rail.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  $('histRail').addEventListener('pointermove', (e) => {
-    if (!railDrag) return;
-    const l = $('histList');
-    const over = l.scrollHeight - l.clientHeight;
-    const span = railDrag.railH - railDrag.thumbH - 4;
-    if (span > 0) l.scrollTop = railDrag.top + (e.clientY - railDrag.y) * (over / span);
-  });
-  const endRailDrag = () => { railDrag = null; };
-  $('histRail').addEventListener('pointerup', endRailDrag);
-  $('histRail').addEventListener('pointercancel', endRailDrag);
+  const histRail = makeRail($('histList'), $('histRail'), $('histThumb'));
+  const syncHistRail = histRail.sync;
+  const reportRail = makeRail($('modalBody'), $('reportRail'), $('reportThumb'));
+
+  // 复盘的高度会变（逐题展开/收起、内容异步填进来），一变就得重算滑块
+  if (window.MutationObserver && $('modalBody')) {
+    new MutationObserver(() => reportRail.sync()).observe($('modalBody'), {
+      childList: true, subtree: true,
+      attributes: true, attributeFilter: ['hidden'],
+    });
+  }
 
   async function showHistoryDetail(id) {
     let d = null;
@@ -2094,6 +2112,8 @@
     $('downloadBtn').hidden = true;          // 历史场次没有现成的 markdown
     $('againBtn').textContent = '再练一场';
     $('modal').hidden = false;
+    $('modalBody').scrollTop = 0;   // 同一个节点反复用，不清会停在上次看到的位置
+    reportRail.sync();
   }
 
   // 只有对话、没有复盘的那一场（中途刷新 / 提前关掉）
@@ -2111,6 +2131,8 @@
     $('againBtn').textContent = '再练一场';
     $('histModal').hidden = true;
     $('modal').hidden = false;
+    $('modalBody').scrollTop = 0;   // 同一个节点反复用，不清会停在上次看到的位置
+    reportRail.sync();
   }
 
   function renderTranscript(turns) {    const box = $('transcript');
@@ -2145,9 +2167,9 @@
     openHistory();
   });
   $('closeHist').addEventListener('click', () => { $('histModal').hidden = true; });
-  $('histList').addEventListener('scroll', syncHistRail);
   window.addEventListener('resize', () => {
     if (!$('histModal').hidden) syncHistRail();
+    if (!$('modal').hidden) reportRail.sync();
   });
   $('histModal').addEventListener('click', (e) => {
     if (e.target === $('histModal')) $('histModal').hidden = true;

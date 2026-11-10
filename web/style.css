@@ -566,17 +566,28 @@ h1, h2, h3, h4, p { margin: 0; }
   animation: rise .28s ease both;
 }
 
-/* 头尾固定、中间滚动：按钮永远看得见，内容不会被压在按钮下面 */
+/* 头尾固定、中间滚动：按钮永远看得见，内容不会被压在按钮下面。
+   滚动条是自绘的，所以正文要自己让出位置——负数 margin 借的是卡片内边距，
+   正文右边缘和以前一样，不多缩。 */
+.body-scroll {
+  position: relative;
+  flex: 1 1 auto; min-height: 0;
+  display: flex;
+  margin-right: -14px;
+}
 .modal-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 6px;
-  margin-right: -6px;
+  padding-right: 14px;
 }
 
 .close {
   position: absolute; top: 14px; right: 14px;
+  /* 滚动区是 position:relative 且在 DOM 里更靠后，不压一层会盖住按钮，
+     点关闭会被「没反应」。两个弹窗共用这一个按钮样式。 */
+  z-index: 3;
   width: 30px; height: 30px; border-radius: 9px;
   border: none; background: #f2f4f7; color: var(--ink2);
   font-size: 18px; line-height: 1;
@@ -724,14 +735,15 @@ ul li b, ol li b { color: var(--ink); font-weight: 600; }
   padding-right: 14px;                /* 给右侧那条自绘滚动条留位 */
 }
 /* 自己画一条常驻滚动条。系统那条别指望：Windows 11 + Edge 默认是浮层滚动条，
-   不动鼠标不出现，而且浮层模式下 ::-webkit-scrollbar 会被忽略（实测宽度 0）。 */
-.hist-rail {
+   不动鼠标不出现，而且浮层模式下 ::-webkit-scrollbar 会被忽略（实测宽度 0）。
+   往期复盘和复盘弹窗共用这一套，位置和手感保持一致。 */
+.rail {
   position: absolute; top: 2px; bottom: 2px; right: 0; width: 8px;
   border-radius: 99px; background: #eceef2;
   cursor: pointer; touch-action: none;
 }
-.hist-rail[hidden] { display: none; }
-.hist-rail i {
+.rail[hidden] { display: none; }
+.rail i {
   position: absolute; left: 0; width: 8px; min-height: 28px;
   border-radius: 99px; background: #aab3c2;
 }
