@@ -734,8 +734,18 @@ ul li b, ol li b { color: var(--ink); font-weight: 600; }
   overflow-y: auto;
   padding-right: 14px;                /* 给右侧那条自绘滚动条留位 */
 }
-/* 自己画一条常驻滚动条。系统那条别指望：Windows 11 + Edge 默认是浮层滚动条，
-   不动鼠标不出现，而且浮层模式下 ::-webkit-scrollbar 会被忽略（实测宽度 0）。
+/* 系统那条必须藏掉，否则和自己画的那条并排 = 双滚动条。
+   它占不占位看浏览器和系统设置：浮层模式下宽度 0，真实 Chrome 窗口实测 15px。
+   两种都得照顾，所以不能指望「反正它不显示」，要明确关掉。 */
+.hist-list, .modal-body {
+  scrollbar-width: none;              /* Firefox 与新版 Chromium */
+  -ms-overflow-style: none;
+}
+.hist-list::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar { width: 0; height: 0; }
+/* 自己画一条常驻滚动条。系统那条两头不靠：浮层模式下不动鼠标不出现，
+   而且那个模式里 ::-webkit-scrollbar 会被直接忽略；经典模式下又和自绘条并排。
+   与其猜这台机器属于哪种，不如一律关掉、只用自己的。
    往期复盘和复盘弹窗共用这一套，位置和手感保持一致。 */
 .rail {
   position: absolute; top: 2px; bottom: 2px; right: 0; width: 8px;
