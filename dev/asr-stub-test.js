@@ -36,8 +36,14 @@ const timers = [];
 const intervals = [];
 global.performance = { now: () => now };
 global.requestAnimationFrame = (fn) => { queueMicrotask(fn); return 0; };
-global.setTimeout = (fn, ms) => { timers.push({ at: now + (ms || 0), fn }); return timers.length; };
-global.clearTimeout = () => {};
+let timerSeq = 0;
+global.setTimeout = (fn, ms) => { const id = ++timerSeq; timers.push({ id, at: now + (ms || 0), fn }); return id; };
+// 以前这里是空函数，清掉的计时器照样会响——于是"该清的没清"在假时钟下测不出来，
+// 反过来"明明挂上了却没有"也测不出来。要跟浏览器一样真的能取消。
+global.clearTimeout = (id) => {
+  const i = timers.findIndex((t) => t.id === id);
+  if (i >= 0) timers.splice(i, 1);
+};
 global.setInterval = (fn, ms) => { intervals.push({ every: ms || 1, fn, next: now + (ms || 1) }); return intervals.length - 1; };
 
 function advance(ms) {
@@ -60,13 +66,13 @@ const flush = () => new Promise((r) => setImmediate(r));
 
 /* ---------------------------------------------------------------- 假 DOM */
 function el(tag) {
-  return {
+  const o = {
     tag,
     _h: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     style: { setProperty() {} },
     dataset: {},
-    appendChild() {}, removeChild() {}, remove() {},
+    appendChild(c) { this._kids.push(c); return c; }, removeChild() {}, remove() {},
     addEventListener(type, fn) { this._h[type] = fn; },
     removeEventListener() {},
     querySelector: () => el('div'),
@@ -75,9 +81,16 @@ function el(tag) {
     click() { if (this._h.click) this._h.click(); },
     setAttribute() {}, getAttribute: () => '',
     scrollHeight: 0, scrollTop: 0, clientHeight: 0, value: '',
-    textContent: '', innerHTML: '', disabled: false, hidden: false,
+    textContent: '', disabled: false, hidden: false,
+    _kids: [],
     get parentElement() { if (!this._p) this._p = el('div'); return this._p; },
   };
+  // innerHTML = '' 是"清空重画"，假 DOM 也得真的清空，否则测不出到底渲染了几条
+  Object.defineProperty(o, 'innerHTML', {
+    get() { return o._html || ''; },
+    set(v) { o._html = v; o._kids.length = 0; },
+  });
+  return o;
 }
 
 const els = new Map();
@@ -174,9 +187,10 @@ const check = (ok, msg) => {
   // 只在内存里把内部状态挂出来，不改文件；app.js 是 IIFE，否则外面看不见
   eval(src
     .replace('const S = {', 'const S = global.__S = {')
-    .replace(/\}\)\(\);\s*$/, 'global.__ui = { renderSamples, renderReport };\n})();'));   // eslint-disable-line no-eval
+    .replace(/\}\)\(\);\s*$/, 'global.__ui = { renderSamples, renderReport, resetSilence };\n})();'));   // eslint-disable-line no-eval
 
   const S = global.__S;
+  const resetSilence = global.__ui.resetSilence;
   check(sr.instances.length === 1, `装载后只建了一个识别实例（${sr.instances.length}）`);
 
   // 冷场阈值要从 health 里读进 nudgeMs，而且不能把「说完判定」的 silenceMs 覆盖掉
@@ -340,6 +354,42 @@ const check = (ok, msg) => {
   await flush();
   check(turnPosts === beforeLong + 1, `再多等一会才提交（自适应约 6.5 秒）`);
 
+  // ⑭ 复盘按题号归位。模型只点评了第 3 题，那么只有第 3 条能挂上参考答法，
+  //    另外两条要明说「未复盘」——按下标配的老写法会把第 3 题的点评贴到第 1 题上，
+  //    用户看到的就是「第 2 题挂着第 6 题的点评，后面全是无范本」。
+  global.__ui.renderSamples({
+    per_round: [{ i: 3, q: '准确率怎么算', comment: '没给分母', sample: '我用 210 个判定点，120 个本来就该留空' }],
+    pairs: [
+      { q: '问题一', a: '答一' },
+      { q: '问题二', a: '答二' },
+      { q: '问题三', a: '答三' },
+    ],
+    mode: 'live',
+  });
+  const kids = global.document.getElementById('samples')._kids || [];
+  const tags = kids.map((it) => {
+    const head = (it._kids || [])[0] || {};
+    return ((head._kids || [])[1] || {}).textContent;
+  });
+  check(kids.length === 3, `复盘渲染 3 条（${kids.length}）`);
+  check(tags[2] === '看参考答法' && tags[0] === '未复盘' && tags[1] === '未复盘',
+    `复盘按题号归位（${tags.join(' / ')}）`);
+
+  // ⑮ 最后一个识别结果正好落在「生成中」时，之后没有任何地方再叫 resumeSilence —
+  //    字不能就这么躺在框里。旧代码在 guard 命中时直接 return，计时器再也没挂上，
+  //    表现是"麦克风还开着、字也在框里，它就是不发"。
+  S.speaking = false;
+  S.busy = true;                                   // 假装这一轮还在生成
+  S.finalText = '这一段是趁它生成的时候说完的';
+  resetSilence();
+  advance(20000);
+  await flush();
+  const beforeStuck = turnPosts;
+  check(turnPosts === beforeStuck, '生成期间不交卷，字先留在框里');
+  S.busy = false;                                  // 生成结束，但没人再叫 resumeSilence
+  advance(2000);
+  await flush();
+  check(turnPosts === beforeStuck + 1, `生成结束后自动补交（${turnPosts - beforeStuck} 次）`);
 
   console.log(bad ? `\n${bad} 条不对` : '\n全部通过');
   process.exit(bad ? 1 : 0);

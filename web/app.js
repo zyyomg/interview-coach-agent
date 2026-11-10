@@ -572,11 +572,11 @@
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const res = e.results[i];
         const t = res[0] && res[0].transcript ? res[0].transcript : '';
-        if (res.isFinal) S.finalText += t;
+        if (res.isFinal) S.finalText = cjkTight(S.finalText + t);
         else interim += t;
       }
       S.interimText = interim;
-      const merged = (S.finalText + interim).trim();
+      const merged = cjkTight((S.finalText + interim).trim());
       // 鼠标在框里打字的时候不要写：否则识别结果会把用户正在打的字冲掉。
       // 点进输入框会把麦克风关掉，所以正常情况下这里也不会被调用。
       if (!S.typing) {
@@ -686,6 +686,11 @@
    */
   function scheduleAsrRetry(reason) {
     if (!S.session || S.finished || !S.voice || S.paused) return;
+    // 已经决定重试了，上一次留下的探针就得撤掉：
+    // 它 2.5 秒后会检查"连上没有"，可那时新的重试根本还没到点，
+    // 于是它按失败处理、用更长的退避把刚挂上的重试覆盖掉——
+    // 表现是"提示 4 秒后重连，实际等了 7 秒"（假时钟改成真取消后才测出来）。
+    clearTimeout(S.timer.asrProbe);
     S.asrFails = (S.asrFails || 0) + 1;
     const wait = Math.min(30, Math.round(4 * Math.pow(1.7, S.asrFails - 1)));
     setStatus(`识别断了（${reason}），${wait} 秒后自动重连…`, '');
@@ -759,6 +764,13 @@
     try { rec.start(); } catch (e) { /* 已在跑 */ }
   }
 
+  // 识别引擎每段结果都带前后空格，逐段拼进缓冲就变成「在 我 提 问 完 毕」。
+  // 中文之间不该有空格（英文单词之间要留），所以只在两侧都是汉字时收掉。
+  // 这行也影响复盘：那份记录是直接从缓冲里取的，空格会一路带进模型提示词。
+  function cjkTight(s) {
+    return (s || '').replace(/([\u4e00-\u9fff])[ \u3000]+(?=[\u4e00-\u9fff])/g, '$1');
+  }
+
   function stopRec() {
     S.wantListen = false;
     clearTimeout(S.timer.silence);
@@ -781,18 +793,29 @@
     return S.silenceMs + extra + (interim ? 1000 : 0);
   }
 
+  // 只要框里有字，就必须**一直挂着一个计时器**。
+  // 原来的写法是：guard 命中（它在说话 / 还在生成）就直接 return，等别的地方
+  // 再叫一次 resumeSilence()。可 busy 和 speaking 什么时候变回来不由这里决定——
+  // 只要最后一个识别结果正好落在生成或播报期间，计时器就再没人挂上，
+  // 表现就是：字躺在框里、麦克风还开着、它却一直不问，用户只能自己按发送。
   function resetSilence() {
     clearTimeout(S.timer.silence);
-    if (S.paused || S.speaking || S.busy) return;   // 暂停 / 它在说 / 还在生成：不判"说完"
-    S.timer.silence = setTimeout(() => {
-      if (!S.paused && !S.speaking && !S.busy && S.finalText.trim()) commitSpeech();
-    }, silenceWaitMs());
+    if (!(S.finalText || '').trim()) return;      // 没字，不用计时
+    S.timer.silence = setTimeout(tryCommit, silenceWaitMs());
   }
 
-  // 播报 / 生成结束时补一次。否则用户趁它说话时讲的内容，
-  // 因为当时 speaking=true 没计时，播完之后就再也没人管了——表现就是"我不说了它也没反应"。
+  function tryCommit() {
+    if (S.paused) return;                          // 暂停：彻底停，恢复时再挂
+    if (S.busy || S.speaking) {                    // 它在生成 / 在说话：等着，字不能丢
+      S.timer.silence = setTimeout(tryCommit, 600);
+      return;
+    }
+    if ((S.finalText || '').trim()) commitSpeech();
+  }
+
+  // 播报 / 生成结束时补挂一次。现在漏叫了也不会丢字，
+  // 真正的兜底在 tryCommit 自己身上。
   function resumeSilence() {
-    if (!S.finalText.trim() || S.speaking || S.busy) return;
     resetSilence();
   }
 
@@ -1566,7 +1589,16 @@
     box.innerHTML = '';
     const rounds = r.per_round || [];
     const pairs = r.pairs || [];
-    const n = Math.max(rounds.length, pairs.length);
+    // 按模型给的题号归位，**不能按下标**：per_round 是"挑出来点评的几题"，
+    // 不是完整列表，两个数组的下标根本不是同一件事。
+    // 按下标配的结果是「第 2 题挂着第 6 题的点评」，后面几题还全变成「无范本」。
+    const byNo = new Map();
+    rounds.forEach((x) => {
+      const k = Number(x.i);
+      if (Number.isInteger(k) && k > 0) byNo.set(k, x);
+    });
+    const numbered = byNo.size > 0;          // 旧报告没有 i，退回按顺序对
+    const n = pairs.length || (numbered ? Math.max(...byNo.keys()) : rounds.length);
     if (!n) { wrap.hidden = true; return; }
     wrap.hidden = false;
 
@@ -1579,10 +1611,16 @@
     }
 
     for (let i = 0; i < n; i++) {
-      const round = rounds[i] || {};
       const pair = pairs[i] || {};
+      const round = (numbered ? byNo.get(i + 1) : rounds[i]) || {};
       const sample = (round.sample || '').trim();
       const qText = pair.q || round.q || `第 ${i + 1} 个话题`;
+      // 没被点评到的题，要说清是"没挑中"，不是"没有范本"——前者是设计，后者像故障
+      const skipped = numbered && !round.i;
+      const tagText = sample ? '看参考答法' : (skipped ? '未复盘' : '无范本');
+      const cmtText = round.comment
+        || (skipped ? '复盘只挑被追问过、答得最差的 7 题，这题没被挑中'
+                    : (sample ? '' : '这一题没有参考答法'));
 
       const item = document.createElement('div');
       item.className = 'sample-item';
@@ -1596,12 +1634,12 @@
       q.textContent = qText;
       const cmt = document.createElement('span');
       cmt.className = 'sample-cmt';
-      cmt.textContent = round.comment || (sample ? '' : '这一题没有参考答法');
+      cmt.textContent = cmtText;
       q.appendChild(cmt);
 
       const tg = document.createElement('span');
       tg.className = 'sample-toggle';
-      tg.textContent = sample ? '看参考答法' : '无范本';
+      tg.textContent = tagText;
 
       head.appendChild(q);
       head.appendChild(tg);
@@ -1646,7 +1684,7 @@
 
       head.addEventListener('click', () => {
         body.hidden = !body.hidden;
-        tg.textContent = body.hidden ? (sample ? '看参考答法' : '无范本') : '收起';
+        tg.textContent = body.hidden ? tagText : '收起';
       });
 
       item.appendChild(head);

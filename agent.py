@@ -38,7 +38,20 @@ GIVEUP_WORDS = (
     "没接触", "不太了解", "没经验", "没想过", "说不清", "过吧",
 )
 
+# 「我也不太清楚」这类话要单独认。上面的词表要求放弃词占全文 1/4，或者整句很短；
+# 长回答里顺口一句「…我也说不太清楚」两头都不满足，会被当成正常内容往下判，
+# 最后落到「够具体，进入下一题」（实测：31 字被判够具体，用户当场指出不对）。
+UNSURE_WORDS = (
+    "不太清楚", "说不太好", "说不好", "说不太清", "答不上", "答不出",
+    "记不清", "想不起来", "不太确定", "拿不准", "不太明白", "不知道怎么说",
+)
+# 认输的话后面不会再接转折。出现这几个词，说明前面那句只是铺垫
+_BACKTURN = ("但是", "不过", "后来", "其实", "然后我", "所以我", "结果我")
+
 _NUM = re.compile(r"\d|[二三四五六七八九十百千万亿两]+(个|人|天|周|月|年|小时|分钟|次|倍|版|条|份|块|万|千)")
+# 「第 1 步」「第一条」是序号，不是数据。不摘掉它，"我认为第 1 是不够" 会被
+# _NUM 当成"有数字"，一路判到"够具体"。
+_ORDINAL = re.compile(r"第[0-9０-９一二三四五六七八九十百]+[个条步点次版章节名位回]?")
 _RESULT = re.compile(r"提升|降低|提高|下降|增长|减少|从.{1,10}到|导致|结果|所以|因此|相比|转化|留存|成本|耗时|延迟|涨|跌")
 _PUNCT = re.compile(r"[\s，。！？；：、,.!?;:…\-—~`\"'“”‘’（）()【】\[\]《》<>]+")
 
@@ -79,9 +92,27 @@ def has_detail(norm: str, strict: bool = False) -> bool:
     """
     for w in _VAGUE_QTY:
         norm = norm.replace(w, "")
+    norm = _ORDINAL.sub("", norm)          # 「第 1 步」不是数据
     num = bool(_NUM.search(norm))
     res = bool(_RESULT.search(norm))
     return (num and res) if strict else (num or res)
+
+
+def unsure_tail(norm: str, tail: int = 16) -> str:
+    """句尾是不是在说"我自己也说不清"，命中就返回那个词，否则空串。
+
+    只看最后 16 个字：真认输的话一定落在末尾（"…这个我也说不太清楚"）；
+    中间出现的「当时不确定，后来查了三份文档」是铺垫，后面跟着转折词就放过。
+    """
+    if not norm:
+        return ""
+    tail_txt = norm[-tail:]
+    best, best_i = "", -1
+    for w in UNSURE_WORDS:
+        i = tail_txt.rfind(w)
+        if i > best_i and not any(t in tail_txt[i + len(w):] for t in _BACKTURN):
+            best, best_i = w, i
+    return best
 
 
 def level_cfg(cfg: dict, level: str) -> dict:
@@ -140,11 +171,23 @@ def decide(text: str, asr_empty: bool, probes: int, clarifys: int, cfg: dict,
     if n < short_chars:
         return {"action": PROBE, "reason": f"偏短（{n} 字 < {short_chars}）", "chars": n}
 
-    if not has_detail(norm, strict=strict):
+    # 第 6 条：「答得够不够具体」。三个触发条件，动作都是追问，所以仍是一条：
+    #   ① 困难档：数字和结果缺一个；② 标准/简单档：数字和结果都没有；
+    #   ③ 句尾自己承认说不清——「…这个问题我也说不太清楚」。
+    # ③ 必须放在长度之后、而且和 ①② 同级，是因为它和"没数字"是同一件事：
+    # 都是"没答到点上"，不是"整句认输"（那种走第 2 条换题）。
+    # 不单独成条，是因为一段又长又带「第 1 步」的空话本来会被判"够具体"，
+    # 把话头稀里糊涂推过去——用户当场指出过这一点。
+    unsure = unsure_tail(norm)
+    if not has_detail(norm, strict=strict) or unsure:
+        if unsure:
+            return {"action": PROBE,
+                    "reason": f"句尾说「{unsure}」（{n} 字），等于没答上来", "chars": n}
         why = "数字和结果都要有" if strict else "没有数字也没有结果"
         return {"action": PROBE, "reason": f"{why}（{n} 字），属「有内容没细节」", "chars": n}
 
-    return {"action": ASK, "reason": "够具体，进入下一题", "chars": n}
+    seen = "数字和结果都有" if strict else "有数字或结果"
+    return {"action": ASK, "reason": f"够具体（{n} 字，{seen}），进入下一题", "chars": n}
 
 
 # ---------------------------------------------------------------- 计数与成本
@@ -417,6 +460,26 @@ def _snip(text: str, n: int = 12) -> str:
     t = re.sub(r"^是(?=来自|在|做|负责|通过|因为|从|用)", "", t)
     t = "".join(_KEEP.findall(t))
     return t[:n].strip()
+
+
+def numbered_transcript(pairs: list, budget: int = 3000) -> str:
+    """把问答对编号成 Q1/A1 交给模型。
+
+    编号必须**跟着原题走**：超长时从最前面整对整对地丢，但保留原编号。
+    否则模型会自己从 1 重数，前端按编号贴回去就全错位——
+    复盘里「第 2 题挂着第 6 题的点评」就是这么来的。
+    """
+    picked, used = [], 0
+    for idx, p in list(enumerate(pairs, 1))[::-1]:
+        cost = len(p.get("q", "")) + len(p.get("a", "")) + 8
+        if picked and used + cost > budget:
+            break
+        picked.append((idx, p))
+        used += cost
+    picked.reverse()
+    return "\n".join(
+        f"Q{i}：{p.get('q', '')}\nA{i}：{p.get('a', '')}" for i, p in picked
+    )
 
 
 class LLMClient:
@@ -1182,11 +1245,23 @@ class InterviewAgent:
         }
 
     # -- 复盘 --------------------------------------------------------
+    def _qa_pairs(self) -> list:
+        """一问一答的配对：复盘里要能"看着自己的原话"对照参考答法。"""
+        pairs, last_q = [], None
+        for t in self.turns:
+            if t["role"] == "agent":
+                last_q = t["text"]
+            elif t["role"] == "user" and last_q:
+                pairs.append({"q": last_q, "a": t["text"]})
+                last_q = None
+        return pairs
+
     def report(self) -> dict:
         if getattr(self, "_report_cache", None):       # 复盘调模型要钱，只生成一次
             return self._report_cache
         m = self.metrics()
-        gen = self._llm_report(m) if self.llm.mode == "live" else None
+        pairs = self._qa_pairs()[:12]
+        gen = self._llm_report(m, pairs) if self.llm.mode == "live" else None
         if not gen:
             gen = self._template_report(m)
             if self.llm.mode == "live":
@@ -1199,27 +1274,16 @@ class InterviewAgent:
             {"role": t["role"], "text": t["text"], "action": t.get("action_label", "")}
             for t in self.turns if t["role"] == "user"
         ]
-        # 一问一答的配对：复盘里要能"看着自己的原话"对照参考答法
-        pairs, last_q = [], None
-        for t in self.turns:
-            if t["role"] == "agent":
-                last_q = t["text"]
-            elif t["role"] == "user" and last_q:
-                pairs.append({"q": last_q, "a": t["text"]})
-                last_q = None
-        gen["pairs"] = pairs[:12]
+        gen["pairs"] = pairs
         gen["mode"] = "live" if self.llm.mode == "live" else "mock"
         self._report_cache = gen
         return gen
 
-    def _llm_report(self, m: dict):
-        transcript = "\n".join(
-            f"{'面' if t['role'] == 'agent' else '候'}：{t['text']}"
-            for t in self.turns if t.get("action") != CLOSE
-        )
+    def _llm_report(self, m: dict, pairs: list):
+        transcript = numbered_transcript(pairs)
         prompt = (
-            "下面是一场模拟面试的完整记录和客观指标。请给出一份复盘，只输出 JSON，不要任何解释文字。\n\n"
-            f"【记录】\n{transcript[-3000:]}\n\n"
+            "下面是一场模拟面试的记录和客观指标。请给出一份复盘，只输出 JSON，不要任何解释文字。\n\n"
+            f"【记录】\n{transcript}\n\n"
             f"【指标】回答 {m['answered']} 个话题，平均 {m['avg_answer_chars']} 字/答，"
             f"追问 {m['actions']['probe']} 次，澄清 {m['actions']['clarify']} 次，"
             f"换题 {m['actions']['switch']} 次，打断 {m['interrupts']['count']} 次。\n"
@@ -1228,11 +1292,15 @@ class InterviewAgent:
             '{"score": 0-100 的整数, "verdict": "一句话总评，20 字内",'
             ' "strengths": ["优势1", "优势2", "优势3"],'
             ' "improvements": [{"issue": "问题", "fix": "具体改法"}],'
-            ' "per_round": [{"q": "问题简述（15 字内）", "comment": "一句话点评他答得怎么样",'
+            ' "per_round": [{"i": 3, "q": "问题简述（15 字内）", "comment": "一句话点评他答得怎么样",'
             ' "approach": "答题思路：从哪个方向切入、按什么顺序讲（30-60 字）",'
             ' "data": "这道题该准备哪些数据（一句话，点名要报的数字或事实）",'
             ' "sample": "参考答法，80-120 字"}]}\n'
             "要求：\n"
+            "0. per_round 每条都必须带 i —— 就是【记录】里那道题的编号（Q 后面那个数字），"
+            "原样照抄。不要自己重新编号、不要省略、不要按顺序猜。"
+            "编号可能不从 1 开始（前面的题被截掉了），照抄即可。"
+            "前端靠这个数字把点评贴回对应的题，填错就贴错题。\n"
             "1. 优势和改进各 3 条，必须引用候选人原话里的具体词；改进项要给可执行动作，"
             "不要写「多练习」这种空话。\n"
             "2. per_round 最多 7 条，优先选被追问过的、答得最差的几题（不用每题都写）。\n"
