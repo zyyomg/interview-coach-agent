@@ -1580,7 +1580,26 @@ def render_markdown(report: dict) -> str:
         "",
         "## 逐轮",
     ]
-    for row in report.get("per_round", []):
+    # 复盘只展开几题（参考答法要模型写，条数一多输出就被截断）。
+    # 导出成 md 时要把"哪几题没展开"写出来，否则读的人会以为那几题被漏掉了。
+    rounds = report.get("per_round", [])
+    pairs = report.get("pairs") or []
+    picked = set()
+    for r in rounds:
+        try:
+            picked.add(int(r.get("i")))
+        except (TypeError, ValueError):
+            pass
+    rest = [(k, p) for k, p in enumerate(pairs, 1) if picked and k not in picked]
+    if rest:
+        lines += [
+            "",
+            f"> 本场 {len(pairs)} 问，重点展开了 {len(picked)} 题（被追问过、答得最差的）；"
+            f"其余 {len(rest)} 题没展开点评，附在文末只列原话。",
+            "",
+        ]
+
+    for row in rounds:
         lines.append(f"### {row.get('q', '')}")
         if row.get("comment"):
             lines.append(f"- 点评：{row.get('comment')}")
@@ -1593,6 +1612,21 @@ def render_markdown(report: dict) -> str:
         elif report.get("mode") == "mock" or report.get("generated_by") == "template":
             lines.append("- 参考答法：这一场没有（演示模式，或模型返回不完整）")
         lines.append("")
+
+    if rest:
+        lines += [
+            "",
+            f"## 没展开点评的 {len(rest)} 题",
+            "",
+            "> 只列你当时的原话，不给参考答法。参考答法要模型逐条写，"
+            "条数一多输出就会被截断，那整份复盘都拿不到。",
+            "",
+        ]
+        for k, p in rest:
+            lines.append(f"### Q{k}　{p.get('q', '')}")
+            if p.get("a"):
+                lines.append(f"- 你当时答的：{p.get('a')}")
+            lines.append("")
 
     lines += [
         "",

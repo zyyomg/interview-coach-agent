@@ -1610,6 +1610,19 @@
       box.appendChild(warn);
     }
 
+    // 展开几题是有成本的：每条 sample 要模型写 60–90 字，7 条就两千多 token，
+    // 再多会被输出上限截断（截断则整份复盘都拿不到，比少写几题糟得多）。
+    // 所以「不是每题都有范本」是设计，但原来的「未复盘」读起来像出错，
+    // 而且把条数写死成 7——模型只给 5 条时，这句解释就开始撒谎。据实说。
+    const reviewed = rounds.filter((x) => (x.sample || '').trim()).length;
+    if (reviewed && reviewed < n) {
+      const hint = document.createElement('div');
+      hint.className = 'sample-hint';
+      hint.textContent = `本场 ${n} 问，重点展开了 ${reviewed} 题（被追问过、答得最差的）；`
+        + `其余 ${n - reviewed} 题标记「看原话」，点开只回放你当时的回答。`;
+      box.appendChild(hint);
+    }
+
     for (let i = 0; i < n; i++) {
       const pair = pairs[i] || {};
       const round = (numbered ? byNo.get(i + 1) : rounds[i]) || {};
@@ -1617,9 +1630,10 @@
       const qText = pair.q || round.q || `第 ${i + 1} 个话题`;
       // 没被点评到的题，要说清是"没挑中"，不是"没有范本"——前者是设计，后者像故障
       const skipped = numbered && !round.i;
-      const tagText = sample ? '看参考答法' : (skipped ? '未复盘' : '无范本');
+      // 「看原话」比「未复盘」准确：点开确实有东西（你当时的回答），只是没有范本
+      const tagText = sample ? '看参考答法' : (skipped ? '看原话' : '无范本');
       const cmtText = round.comment
-        || (skipped ? '复盘只挑被追问过、答得最差的 7 题，这题没被挑中'
+        || (skipped ? '本场没展开点评，只回放你的原话'
                     : (sample ? '' : '这一题没有参考答法'));
 
       const item = document.createElement('div');
@@ -1638,7 +1652,8 @@
       q.appendChild(cmt);
 
       const tg = document.createElement('span');
-      tg.className = 'sample-toggle';
+      // 没展开点评的调成灰色：蓝色是「这里有东西可看」，全蓝就分不出重点了
+      tg.className = sample ? 'sample-toggle' : 'sample-toggle muted';
       tg.textContent = tagText;
 
       head.appendChild(q);

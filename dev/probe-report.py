@@ -68,7 +68,7 @@ def main():
     print("\n归位检查（前端按这个贴）：")
     for k, p in enumerate(pairs, 1):
         hit = next((r for r in pr if int(r.get("i") or 0) == k), None)
-        ok = "看参考答法" if (hit and hit.get("sample")) else "未复盘"
+        ok = "看参考答法" if (hit and hit.get("sample")) else "看原话"
         print(f"  Q{k} {p['q'][:32]:<34} → {ok}")
 
 

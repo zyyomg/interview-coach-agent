@@ -355,7 +355,7 @@ const check = (ok, msg) => {
   check(turnPosts === beforeLong + 1, `再多等一会才提交（自适应约 6.5 秒）`);
 
   // ⑭ 复盘按题号归位。模型只点评了第 3 题，那么只有第 3 条能挂上参考答法，
-  //    另外两条要明说「未复盘」——按下标配的老写法会把第 3 题的点评贴到第 1 题上，
+  //    另外两条要明说「只回放原话」——按下标配的老写法会把第 3 题的点评贴到第 1 题上，
   //    用户看到的就是「第 2 题挂着第 6 题的点评，后面全是无范本」。
   global.__ui.renderSamples({
     per_round: [{ i: 3, q: '准确率怎么算', comment: '没给分母', sample: '我用 210 个判定点，120 个本来就该留空' }],
@@ -367,13 +367,18 @@ const check = (ok, msg) => {
     mode: 'live',
   });
   const kids = global.document.getElementById('samples')._kids || [];
-  const tags = kids.map((it) => {
+  const hint = kids.find((it) => it.className === 'sample-hint');
+  const items = kids.filter((it) => it.className === 'sample-item');
+  const tags = items.map((it) => {
     const head = (it._kids || [])[0] || {};
     return ((head._kids || [])[1] || {}).textContent;
   });
-  check(kids.length === 3, `复盘渲染 3 条（${kids.length}）`);
-  check(tags[2] === '看参考答法' && tags[0] === '未复盘' && tags[1] === '未复盘',
+  check(items.length === 3, `复盘渲染 3 条（${items.length}）`);
+  check(tags[2] === '看参考答法' && tags[0] === '看原话' && tags[1] === '看原话',
     `复盘按题号归位（${tags.join(' / ')}）`);
+  // 条数必须据实算：模型只给 1 条就别写「只挑 7 题」——那是写死的谎
+  check(!!hint && hint.textContent.includes('本场 3 问，重点展开了 1 题'),
+    `说明展开了几条（${hint ? hint.textContent : '没有这行说明'}）`);
 
   // ⑮ 最后一个识别结果正好落在「生成中」时，之后没有任何地方再叫 resumeSilence —
   //    字不能就这么躺在框里。旧代码在 guard 命中时直接 return，计时器再也没挂上，

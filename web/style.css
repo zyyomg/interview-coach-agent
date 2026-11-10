@@ -623,6 +623,11 @@ ul li b, ol li b { color: var(--ink); font-weight: 600; }
 
 /* 逐题参考答法：默认收起，点按钮才展开 */
 .samples { display: flex; flex-direction: column; gap: 8px; }
+.sample-hint {
+  font-size: 11.5px; line-height: 1.7; color: var(--ink2);
+  background: #f7f8fa; border: 1px solid var(--line);
+  border-radius: 10px; padding: 7px 11px;
+}
 .sample-note {
   font-size: 11.5px; line-height: 1.6; color: var(--amber);
   background: var(--amber-bg); border: 1px solid #f0d9a8;
@@ -647,6 +652,9 @@ ul li b, ol li b { color: var(--ink); font-weight: 600; }
   flex: none; font-size: 11px; color: var(--accent);
   border: 1px solid #c5d2f8; background: var(--accent-soft);
   border-radius: 99px; padding: 2px 9px; white-space: nowrap;
+}
+.sample-toggle.muted {
+  color: var(--ink3); border-color: var(--line); background: #f4f5f7;
 }
 .sample-body {
   padding: 0 13px 12px; font-size: 12.5px; line-height: 1.75; color: var(--ink2);
