@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+import ssl
 import time
 from pathlib import Path
 from urllib import request as urlrequest
@@ -265,6 +266,41 @@ def classify_error(msg: str) -> dict:
     if "getaddrinfo" in low or "name or service" in low or "connection" in low or "urlopen" in low:
         return {"kind": "network", "hint": "连不上 api.deepseek.com：检查网络或代理设置"}
     return {"kind": "unknown", "hint": "看服务窗口里的原始报错；也可以跑 python tools.py check 复现"}
+
+
+# ---------------------------------------------------------------- 网络适配
+
+_TLS = {"force12": False, "ctx": None}
+
+
+def _tls12_ctx():
+    """TLS 1.2 的 SSLContext，只在真的需要降级时才建。"""
+    if _TLS["ctx"] is None:
+        ctx = ssl.create_default_context()
+        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+        _TLS["ctx"] = ctx
+    return _TLS["ctx"]
+
+
+def _open(req, timeout):
+    """发请求。链路掐 TLS 1.3 时自动降一级重试，之后固定走 1.2。
+
+    为什么要这个：有些代理或中间设备在 TLS 1.3 的 ClientHello 上直接断连，
+    Python 侧看到的是握手超时或 UNEXPECTED_EOF，而 curl 能过——因为 curl 常协商到 1.2。
+    降级只发生一次，之后不再多付一次往返；换到正常网络时根本不会触发。
+    """
+    if not _TLS["force12"]:
+        try:
+            return urlrequest.urlopen(req, timeout=timeout)
+        except HTTPError:
+            raise
+        except OSError as e:
+            low = str(e).lower()
+            if not any(k in low for k in ("ssl", "tls", "eof", "handshake",
+                                          "timed out", "timeout")):
+                raise
+            _TLS["force12"] = True
+    return urlrequest.urlopen(req, timeout=timeout, context=_tls12_ctx())
 
 
 # ---------------------------------------------------------------- 分句
@@ -538,7 +574,7 @@ class LLMClient:
         req = urlrequest.Request(url, data=json.dumps(body).encode("utf-8"),
                                  headers=headers, method="POST")
         try:
-            resp = urlrequest.urlopen(req, timeout=60)
+            resp = _open(req, 60)
         except HTTPError as e:
             detail = e.read().decode("utf-8", "ignore")[:400]
             # 兼容性退让：少数端点（或旧版接口）不认这些可选字段，去掉重试一次
@@ -548,7 +584,7 @@ class LLMClient:
             body.pop(drop, None)
             req = urlrequest.Request(url, data=json.dumps(body).encode("utf-8"),
                                      headers=headers, method="POST")
-            resp = urlrequest.urlopen(req, timeout=60)
+            resp = _open(req, 60)
 
         usage = {}
         text_len = 0

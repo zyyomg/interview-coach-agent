@@ -70,7 +70,7 @@ def _models(client: A.LLMClient) -> list:
         f"{client.base}/models",
         headers={"Authorization": f"Bearer {client.key}"},
     )
-    with urlrequest.urlopen(req, timeout=15) as resp:
+    with A._open(req, 15) as resp:
         obj = json.loads(resp.read().decode("utf-8", "ignore"))
     return [str(m.get("id")) for m in (obj.get("data") or []) if m.get("id")]
 
