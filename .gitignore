@@ -6,6 +6,10 @@
 # 个人练习记录（目录由程序自动创建，内容含真实对话，不入库）
 runs/
 
+# M6 文本链路预跑的产物（脚本生成，含对话原文，不入库）
+runs-m6-text/
+dev/prerun.log
+
 # Python
 __pycache__/
 *.py[cod]
